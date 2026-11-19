@@ -1,0 +1,76 @@
+from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy import Column, String, Integer, DateTime, Boolean, Text, ForeignKey, JSON
+from datetime import datetime
+import uuid
+
+Base = declarative_base()
+
+def generate_uuid():
+    return str(uuid.uuid4())
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    connect_id = Column(String, unique=True, index=True, nullable=False)  # Unique handle, e.g. @sakthi
+    email = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    bio = Column(String, default="Hey there! I am using Vertex Connect.")
+    role = Column(String, default="employee")  # supervisor, employee, admin
+    status = Column(String, default="online")  # online, away, busy, offline
+    avatar = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class UserConnection(Base):
+    __tablename__ = "user_connections"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    requester_id = Column(String, ForeignKey("users.id"), index=True, nullable=False)
+    receiver_id = Column(String, ForeignKey("users.id"), index=True, nullable=False)
+    status = Column(String, default="pending")  # pending, accepted, rejected
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+class Workspace(Base):
+    __tablename__ = "workspaces"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    name = Column(String, nullable=False)
+    slug = Column(String, unique=True, index=True, nullable=False)
+    plan = Column(String, default="pilot")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    workspace_id = Column(String, index=True, default="default")
+    conversation_id = Column(String, index=True, nullable=False)
+    sender_id = Column(String, index=True, nullable=False)
+    sender_name = Column(String, nullable=False)
+    receiver_id = Column(String, index=True, nullable=True)
+    content = Column(Text, nullable=False)
+    file_url = Column(String, nullable=True)
+    file_name = Column(String, nullable=True)
+    file_size = Column(String, nullable=True)
+    file_type = Column(String, nullable=True)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class CallQualityScorecard(Base):
+    __tablename__ = "call_quality_scorecards"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    call_id = Column(String, index=True, nullable=False)
+    workspace_id = Column(String, index=True, nullable=False)
+    agent_id = Column(String, index=True, nullable=False)
+    agent_name = Column(String, nullable=False)
+    customer_identifier = Column(String, nullable=True)
+    duration_seconds = Column(Integer, default=0)
+    language = Column(String, default="Tamil + English")
+    overall_score = Column(Integer, default=0)
+    dimensions = Column(JSON, nullable=False)
+    status = Column(String, default="pending_review")  # pending_review, approved, amended
+    supervisor_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
