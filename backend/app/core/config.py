@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     FROM_EMAIL: str = os.getenv("FROM_EMAIL", "sakthihinata1205@gmail.com")
     FROM_NAME: str = os.getenv("FROM_NAME", "VERTEX CONNECT")
 
+    # Cloudflare D1 Database
+    CLOUDFLARE_ACCOUNT_ID: str = os.getenv("CLOUDFLARE_ACCOUNT_ID", "a1308b7963e86ae61a3cb215dd276bed")
+    CLOUDFLARE_D1_DATABASE_ID: str = os.getenv("CLOUDFLARE_D1_DATABASE_ID", "6926e446-a98b-4c6f-9466-f9dc6d4966a9")
+    CLOUDFLARE_API_TOKEN: str = os.getenv("CLOUDFLARE_API_TOKEN", "cfoat__Rf4jKIRirdA7vsKbtfxs_HBKfYHNPGpFJVfxOleo-8.PDHYtKtUkwSxdvefHZGBLE-iqeSDQSHWCHuzBoQkgFA")
+    USE_CLOUDFLARE_D1: bool = os.getenv("USE_CLOUDFLARE_D1", "true").lower() == "true"
+
     # Groq / Gemini API keys (Optional)
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")

@@ -24,6 +24,9 @@ ENV/
 backend/uploads/*
 !backend/uploads/.gitkeep
 
+# Cloudflare Wrangler
+.wrangler/
+
 # OS & Editor
 .DS_Store
 Thumbs.db

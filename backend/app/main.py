@@ -15,6 +15,7 @@ from sqlalchemy import select, func, or_, and_
 
 from app.core.config import settings
 from app.db.session import init_db, get_db
+from app.db.d1_client import d1
 from app.models.base import User as UserModel, UserConnection as ConnectionModel, Message as MessageModel
 from app.core.security import hash_password, verify_password, create_access_token
 from app.services.email_service import send_otp_email
@@ -27,6 +28,13 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 async def lifespan(app: FastAPI):
     # Initialize DB tables on startup
     await init_db()
+    # Check Cloudflare D1 connection
+    try:
+        d1_res = await d1.execute("SELECT 1 as ping;")
+        if d1_res.get("success") or d1_res.get("results"):
+            print(f"[Cloudflare D1] Connected to database connect ({settings.CLOUDFLARE_D1_DATABASE_ID})")
+    except Exception as e:
+        print(f"[Cloudflare D1] Warning: {e}")
     yield
 
 app = FastAPI(
@@ -170,9 +178,10 @@ def root():
         "project": "VERTEX CONNECT",
         "status": "online",
         "version": "2.0.0",
-        "database": "SQLite (Async SQLAlchemy) · Stored at vertex_connect.db",
-        "email_service": "Gmail SMTP Active (sakthihinata1205@gmail.com)",
-        "features": ["Connect ID", "Unique Search", "User-isolated Messaging", "File Attachments"],
+        "database": f"Cloudflare D1 (connect: {settings.CLOUDFLARE_D1_DATABASE_ID}) + Local SQLite",
+        "cloudflare_d1_id": settings.CLOUDFLARE_D1_DATABASE_ID,
+        "email_service": f"Gmail SMTP Active ({settings.FROM_EMAIL})",
+        "features": ["Cloudflare D1 Cloud Database", "Connect ID", "Unique Search", "User-isolated Messaging", "File Attachments"],
         "docs": "/docs"
     }
 
@@ -180,6 +189,24 @@ def root():
 @app.get(f"{settings.API_V1_STR}/health")
 def health_check():
     return {"status": "healthy", "service": "vertex-connect-api"}
+
+@app.get(f"{settings.API_V1_STR}/d1/status")
+async def d1_status():
+    try:
+        user_count = await d1.fetch_one("SELECT COUNT(*) as count FROM users;")
+        msg_count = await d1.fetch_one("SELECT COUNT(*) as count FROM messages;")
+        conn_count = await d1.fetch_one("SELECT COUNT(*) as count FROM user_connections;")
+        return {
+            "connected": True,
+            "database_name": "connect",
+            "database_id": settings.CLOUDFLARE_D1_DATABASE_ID,
+            "account_id": settings.CLOUDFLARE_ACCOUNT_ID,
+            "cloud_users": user_count.get("count", 0) if user_count else 0,
+            "cloud_messages": msg_count.get("count", 0) if msg_count else 0,
+            "cloud_connections": conn_count.get("count", 0) if conn_count else 0
+        }
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
 
 # 1. Check Connect ID Availability in Real-Time
 @app.get(f"{settings.API_V1_STR}/auth/check-connect-id")
@@ -308,6 +335,12 @@ async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(new_user)
 
+    # Sync user to Cloudflare D1
+    try:
+        await d1.sync_user(new_user)
+    except Exception as e:
+        print(f"[Cloudflare D1] User sync notice: {e}")
+
     token = create_access_token(new_user.id)
     return {
         "access_token": token,
@@ -409,6 +442,13 @@ async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(g
 
     user.hashed_password = hash_password(req.new_password)
     await db.commit()
+
+    # Sync password update to Cloudflare D1
+    try:
+        await d1.sync_user(user)
+    except Exception as e:
+        print(f"[Cloudflare D1] Password sync notice: {e}")
+
     return {"success": True, "message": "Password reset successfully. You can now login with your new password."}
 
 # 6. Update Profile
@@ -431,6 +471,12 @@ async def update_profile(req: ProfileUpdateRequest, db: AsyncSession = Depends(g
 
     await db.commit()
     await db.refresh(user)
+
+    # Sync profile update to Cloudflare D1
+    try:
+        await d1.sync_user(user)
+    except Exception as e:
+        print(f"[Cloudflare D1] Profile sync notice: {e}")
 
     return UserResponse(
         id=user.id,
@@ -538,6 +584,12 @@ async def request_connection(req: ConnectRequestModel, db: AsyncSession = Depend
     await db.commit()
     await db.refresh(new_conn)
 
+    # Sync connection to Cloudflare D1
+    try:
+        await d1.sync_connection(new_conn)
+    except Exception as e:
+        print(f"[Cloudflare D1] Connection sync notice: {e}")
+
     # Notify target user via WebSocket if online
     await manager.send_to_user(target.id, {
         "type": "connection_request",
@@ -565,6 +617,12 @@ async def accept_connection(req: AcceptConnectModel, db: AsyncSession = Depends(
     conn.status = "accepted"
     conn.updated_at = datetime.utcnow()
     await db.commit()
+
+    # Sync accepted status to Cloudflare D1
+    try:
+        await d1.sync_connection(conn)
+    except Exception as e:
+        print(f"[Cloudflare D1] Accept sync notice: {e}")
 
     # Notify requester
     await manager.send_to_user(conn.requester_id, {
@@ -641,6 +699,12 @@ async def send_message(req: SendMessageModel, db: AsyncSession = Depends(get_db)
     db.add(new_msg)
     await db.commit()
     await db.refresh(new_msg)
+
+    # Sync chat message to Cloudflare D1
+    try:
+        await d1.sync_message(new_msg)
+    except Exception as e:
+        print(f"[Cloudflare D1] Message sync notice: {e}")
 
     payload = {
         "id": new_msg.id,
