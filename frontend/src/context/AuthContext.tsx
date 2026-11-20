@@ -119,10 +119,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (identifier: string, pass?: string, otp?: string) => {
     try {
-      const isEmail = identifier.includes('@');
+      const trimmed = identifier.trim();
+      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+      const cleanConnectId = trimmed.replace(/^@/, '');
       const body: any = {
-        email: isEmail ? identifier : undefined,
-        connect_id: !isEmail ? identifier : undefined,
+        identifier: trimmed,
+        email: isEmail ? trimmed.toLowerCase() : undefined,
+        connect_id: !isEmail ? cleanConnectId.toLowerCase() : undefined,
         password: pass,
         otp,
       };

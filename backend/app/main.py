@@ -101,7 +101,8 @@ class SignupRequest(BaseModel):
     otp: Optional[str] = None
 
 class LoginRequest(BaseModel):
-    email: Optional[EmailStr] = None
+    identifier: Optional[str] = None
+    email: Optional[str] = None
     connect_id: Optional[str] = None
     password: Optional[str] = None
     otp: Optional[str] = None
@@ -324,39 +325,53 @@ async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
         )
     }
 
-# 5. Login (Email or Connect ID)
+# 5. Login (Email or Connect ID or Identifier)
 @app.post(f"{settings.API_V1_STR}/auth/login", response_model=AuthResponse)
 async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
-    user = None
-    if req.email:
-        stmt = select(UserModel).where(UserModel.email == req.email)
-        res = await db.execute(stmt)
-        user = res.scalar_one_or_none()
-    elif req.connect_id:
-        clean_id = clean_connect_id(req.connect_id)
-        stmt = select(UserModel).where(UserModel.connect_id == clean_id)
-        res = await db.execute(stmt)
-        user = res.scalar_one_or_none()
-    else:
-        raise HTTPException(status_code=400, detail="Please provide either email or Connect ID.")
+    raw_ident = (req.identifier or req.email or req.connect_id or "").strip()
+    if not raw_ident:
+        raise HTTPException(status_code=400, detail="Please enter your Connect ID or Email address.")
+
+    clean_id = clean_connect_id(raw_ident)
+    
+    # Flexible lookup: match email (case-insensitive) OR connect_id (with or without @)
+    stmt = select(UserModel).where(
+        or_(
+            func.lower(UserModel.email) == raw_ident.lower(),
+            func.lower(UserModel.connect_id) == clean_id,
+            func.lower(UserModel.connect_id) == raw_ident.lower()
+        )
+    )
+    res = await db.execute(stmt)
+    user = res.scalar_one_or_none()
 
     # OTP login verification
     if req.otp:
-        if not req.email:
-            raise HTTPException(status_code=400, detail="Email is required for OTP login.")
-        record = otp_store.get(req.email)
+        lookup_email = user.email if user else raw_ident
+        record = otp_store.get(lookup_email)
         if not record or record["code"].strip() != req.otp.strip():
             raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
-        del otp_store[req.email]
+        if datetime.utcnow() > record["expires_at"]:
+            del otp_store[lookup_email]
+            raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
+        del otp_store[lookup_email]
         
         if not user:
-            raise HTTPException(status_code=404, detail="No account found with this email. Please sign up.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No account found with '{raw_ident}'. Please sign up.")
     else:
         # Password check
         if not req.password:
             raise HTTPException(status_code=400, detail="Password or OTP required.")
-        if not user or not verify_password(req.password, user.hashed_password):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No account found for '{raw_ident}'. This Connect ID or Email is not registered. Please sign up."
+            )
+        if not verify_password(req.password, user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect password. Please check your password or use 'Forgot Password' to sign in with OTP."
+            )
 
     token = create_access_token(user.id)
     return {
@@ -374,6 +389,27 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
             created_at=user.created_at
         )
     }
+
+# 5b. Reset Password with OTP
+@app.post(f"{settings.API_V1_STR}/auth/reset-password")
+async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    record = otp_store.get(req.email)
+    if not record or record["code"].strip() != req.otp.strip():
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP code.")
+    if datetime.utcnow() > record["expires_at"]:
+        del otp_store[req.email]
+        raise HTTPException(status_code=400, detail="OTP code has expired. Please request a new one.")
+    del otp_store[req.email]
+
+    stmt = select(UserModel).where(func.lower(UserModel.email) == req.email.lower())
+    res = await db.execute(stmt)
+    user = res.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No user registered with this email address.")
+
+    user.hashed_password = hash_password(req.new_password)
+    await db.commit()
+    return {"success": True, "message": "Password reset successfully. You can now login with your new password."}
 
 # 6. Update Profile
 @app.put(f"{settings.API_V1_STR}/auth/profile", response_model=UserResponse)
