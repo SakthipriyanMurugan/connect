@@ -6,8 +6,10 @@ import { Sidebar, NavPage } from './components/layout/Sidebar';
 import { Topbar } from './components/layout/Topbar';
 import { CustomizerDrawer } from './components/layout/CustomizerDrawer';
 import { CallBar } from './components/calling/CallBar';
-import { CallModal, ActiveCallSession } from './components/calling/CallModal';
+import { CallModal, ActiveCallSession, CallEndStats } from './components/calling/CallModal';
 import { IncomingCallModal, IncomingCallData } from './components/calling/IncomingCallModal';
+import { MeetingIntelligenceModal } from './components/calling/MeetingIntelligenceModal';
+import type { MeetingIntelligenceReport } from './types';
 import { MessagesPage } from './components/pages/MessagesPage';
 import { MeetingsPage } from './components/pages/MeetingsPage';
 import { IntelligencePage } from './components/pages/IntelligencePage';
@@ -26,9 +28,20 @@ const MainLayout: React.FC = () => {
   const [activeCallSession, setActiveCallSession] = useState<ActiveCallSession | null>(null);
   const [isCallMinimized, setIsCallMinimized] = useState<boolean>(false);
   const [incomingCall, setIncomingCall] = useState<IncomingCallData | null>(null);
+  const [intelligenceReport, setIntelligenceReport] = useState<MeetingIntelligenceReport | null>(null);
 
   // Global WebSocket for Call Signaling
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Register Service Worker for Web Push & request Notification permission
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('SW register notice:', e));
+    }
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+  }, []);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -67,6 +80,18 @@ const MainLayout: React.FC = () => {
                 room_name: data.room_name,
                 call_type: data.call_type || 'video',
               });
+
+              // Trigger Native Web Push / Desktop Notification if in background
+              if ('Notification' in window && Notification.permission === 'granted') {
+                try {
+                  new Notification(`VERTEX CONNECT: Incoming ${data.call_type || 'video'} call`, {
+                    body: `Incoming call from ${data.caller_name || 'Teammate'} (@${data.caller_connect_id})`,
+                    icon: '/favicon.ico',
+                  });
+                } catch (e) {
+                  console.warn('Native notification notice:', e);
+                }
+              }
             } else if (data.type === 'call_response') {
               if (!data.accepted) {
                 showToast('Call was declined by teammate.');
@@ -222,8 +247,8 @@ const MainLayout: React.FC = () => {
     showToast('Call declined.');
   };
 
-  // End active call
-  const handleEndCall = () => {
+  // End active call and trigger AI Meeting Intelligence
+  const handleEndCall = async (stats?: CallEndStats) => {
     if (activeCallSession && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({
@@ -233,9 +258,39 @@ const MainLayout: React.FC = () => {
         })
       );
     }
+    const currentSession = activeCallSession;
     setActiveCallSession(null);
     setIsCallMinimized(false);
-    showToast('Call ended. Generating AI Call Scorecard review…');
+
+    // Auto-generate AI Call Scorecard & Intelligence Report
+    if (stats && stats.duration_seconds > 0) {
+      showToast('Generating AI Meeting Intelligence Report…');
+      try {
+        const res = await fetch('http://localhost:8000/api/v1/intelligence/summarize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            room_name: stats.room_name || currentSession?.roomName,
+            title: stats.title || currentSession?.title || 'Team Synchronization',
+            caller_id: user?.id,
+            duration_seconds: stats.duration_seconds,
+            participants: stats.participants || [user?.name || 'Teammate'],
+            meeting_type: currentSession?.callType || 'video',
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.report) {
+            setIntelligenceReport(data.report);
+            showToast('AI Intelligence Scorecard ready!');
+          }
+        }
+      } catch (e) {
+        console.warn('AI Intelligence generation notice:', e);
+      }
+    } else {
+      showToast('Call ended.');
+    }
   };
 
   if (!isAuthenticated) {
@@ -320,6 +375,15 @@ const MainLayout: React.FC = () => {
           call={incomingCall}
           onAccept={handleAcceptIncomingCall}
           onDecline={handleDeclineIncomingCall}
+        />
+      )}
+
+      {/* AI Meeting Intelligence Scorecard & Summary Modal */}
+      {intelligenceReport && (
+        <MeetingIntelligenceModal
+          report={intelligenceReport}
+          onClose={() => setIntelligenceReport(null)}
+          onShowToast={showToast}
         />
       )}
 

@@ -18,7 +18,9 @@ import {
   Maximize2,
   Users,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  Link2,
+  Copy
 } from 'lucide-react';
 import { fetchLiveKitToken } from '../../services/livekit';
 
@@ -30,10 +32,17 @@ export interface ActiveCallSession {
   isIncoming?: boolean;
 }
 
+export interface CallEndStats {
+  duration_seconds: number;
+  participants: string[];
+  title: string;
+  room_name: string;
+}
+
 interface CallModalProps {
   session: ActiveCallSession;
   currentUser: { id: string; name: string; connect_id?: string };
-  onEndCall: () => void;
+  onEndCall: (stats?: CallEndStats) => void;
   onMinimize: () => void;
   onShowToast: (msg: string) => void;
 }
@@ -230,7 +239,14 @@ export const CallModal: React.FC<CallModalProps> = ({
     if (room) {
       room.disconnect();
     }
-    onEndCall();
+    const pNames = [currentUser.name];
+    if (remoteName && !pNames.includes(remoteName)) pNames.push(remoteName);
+    onEndCall({
+      duration_seconds: seconds,
+      participants: pNames,
+      title: session.title,
+      room_name: session.roomName,
+    });
   };
 
   return (
@@ -259,6 +275,21 @@ export const CallModal: React.FC<CallModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Copy Conference Meeting Link */}
+            <button
+              type="button"
+              onClick={() => {
+                const link = `${window.location.origin}/?room=${session.roomName}`;
+                navigator.clipboard.writeText(link);
+                onShowToast('Conference room link copied! Send to teammates to join.');
+              }}
+              title="Copy meeting link to invite teammates"
+              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-[#cbd4ff] hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+            >
+              <Link2 className="w-3.5 h-3.5 text-[var(--accent)]" />
+              <span>Invite Link</span>
+            </button>
+
             <button
               type="button"
               onClick={onMinimize}

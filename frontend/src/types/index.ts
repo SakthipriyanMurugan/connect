@@ -40,6 +40,9 @@ export interface ChatMessage {
   file_name?: string;
   file_size?: string;
   file_type?: string;
+  reply_to_id?: string;
+  reply_to_snippet?: string;
+  reactions?: Record<string, string[]>;
   created_at: string;
   is_me?: boolean;
 }
@@ -50,9 +53,24 @@ export interface ConnectionUser {
   name: string;
   connect_id: string;
   bio?: string;
-  status: string;
+  status: 'online' | 'in_call' | 'away' | 'offline' | string;
+  last_seen?: string;
   avatar?: string;
   conversation_id?: string;
+}
+
+export interface MeetingIntelligenceReport {
+  id: string;
+  room_name: string;
+  title: string;
+  duration_seconds: number;
+  created_at: string;
+  executive_summary: string;
+  action_items: { task: string; assignee: string; priority: 'high' | 'medium' | 'low' }[];
+  key_decisions: string[];
+  sentiment_score: number;
+  sentiment_label: string;
+  talk_time_breakdown: { name: string; percentage: number }[];
 }
 
 export interface SearchUserResult {

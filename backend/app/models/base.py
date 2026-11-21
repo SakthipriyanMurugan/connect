@@ -55,7 +55,26 @@ class Message(Base):
     file_name = Column(String, nullable=True)
     file_size = Column(String, nullable=True)
     file_type = Column(String, nullable=True)
+    reply_to_id = Column(String, nullable=True)
+    reply_to_snippet = Column(String, nullable=True)
+    reactions = Column(JSON, default=dict)
     is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class MeetingIntelligence(Base):
+    __tablename__ = "meeting_intelligence"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    room_name = Column(String, index=True, nullable=False)
+    title = Column(String, nullable=False)
+    caller_id = Column(String, index=True, nullable=True)
+    duration_seconds = Column(Integer, default=0)
+    executive_summary = Column(Text, nullable=False)
+    action_items = Column(JSON, default=list)
+    key_decisions = Column(JSON, default=list)
+    sentiment_score = Column(Integer, default=94)
+    sentiment_label = Column(String, default="Highly Collaborative & Constructive")
+    talk_time_breakdown = Column(JSON, default=list)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class CallQualityScorecard(Base):

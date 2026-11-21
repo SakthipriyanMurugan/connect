@@ -21,9 +21,16 @@ import {
   Image as ImageIcon,
   UserCheck,
   Loader2,
-  X
+  X,
+  Reply,
+  Trash2,
+  StopCircle,
+  Flame,
+  ThumbsUp,
+  Heart
 } from 'lucide-react';
 import type { ChatMessage, ConnectionUser, SearchUserResult } from '../../types';
+import { VoiceNotePlayer } from '../chat/VoiceNotePlayer';
 
 interface MessagesPageProps {
   onStartCall: (name: string, callType?: 'video' | 'audio', targetUserId?: string, targetConnectId?: string) => void;
@@ -55,6 +62,16 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const [isUploading, setIsUploading] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
 
+  // WhatsApp Voice Note Recording State
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [voiceRecordSeconds, setVoiceRecordSeconds] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const voiceTimerRef = useRef<any>(null);
+
+  // Message Reply & Reaction State
+  const [replyingTo, setReplyingTo] = useState<{ id: string; sender_name: string; content: string } | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -79,16 +96,34 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     if (!user) return;
     setIsLoadingConnections(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/connections?user_id=${user.id}`);
+      const [res, presenceRes] = await Promise.all([
+        fetch(`http://localhost:8000/api/v1/connections?user_id=${user.id}`),
+        fetch(`http://localhost:8000/api/v1/presence`).catch(() => null)
+      ]);
+
+      let presenceMap: Record<string, any> = {};
+      if (presenceRes && presenceRes.ok) {
+        presenceMap = await presenceRes.json();
+      }
+
       if (res.ok) {
         const data = await res.json();
-        setFriends(data.friends || []);
+        const enrichedFriends = (data.friends || []).map((f: ConnectionUser) => {
+          const pres = presenceMap[f.user_id];
+          return {
+            ...f,
+            status: pres?.status || f.status || 'offline',
+            last_seen: pres?.last_seen || f.last_seen,
+          };
+        });
+
+        setFriends(enrichedFriends);
         setPendingIncoming(data.pending_incoming || []);
         setPendingOutgoing(data.pending_outgoing || []);
 
         // If no active friend selected, select first friend
-        if (!activeFriend && data.friends?.length > 0) {
-          setActiveFriend(data.friends[0]);
+        if (!activeFriend && enrichedFriends.length > 0) {
+          setActiveFriend(enrichedFriends[0]);
         }
       }
     } catch (e) {
@@ -137,6 +172,25 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 });
               }
               onShowToast(`New message from ${newMsg.sender_name}`);
+            } else if (data.type === 'message_reaction') {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === data.message_id ? { ...m, reactions: data.reactions } : m
+                )
+              );
+            } else if (data.type === 'presence_update') {
+              setFriends((prev) =>
+                prev.map((f) =>
+                  f.user_id === data.user_id
+                    ? { ...f, status: data.status, last_seen: data.last_seen || f.last_seen }
+                    : f
+                )
+              );
+              if (activeFriendRef.current?.user_id === data.user_id) {
+                setActiveFriend((curr) =>
+                  curr ? { ...curr, status: data.status, last_seen: data.last_seen || curr.last_seen } : null
+                );
+              }
             } else if (data.type === 'connection_request') {
               onShowToast('You received a new connection request!');
               fetchConnections();
@@ -301,13 +355,16 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }
   };
 
-  // 7. Send Real-Time Text Message (Instant Optimistic UI)
+  // 7. Send Real-Time Text Message (Instant Optimistic UI + Reply Quote)
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputMessage.trim() || !user || !activeFriend) return;
 
     const messageContent = inputMessage.trim();
     const tempId = `temp_${Date.now()}`;
+    const replySnippet = replyingTo ? `${replyingTo.sender_name}: ${replyingTo.content.slice(0, 60)}` : undefined;
+    const replyId = replyingTo?.id;
+
     const optimisticMessage: ChatMessage = {
       id: tempId,
       conversation_id: activeFriend.conversation_id || '',
@@ -315,6 +372,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       sender_name: user.name,
       receiver_id: activeFriend.user_id,
       content: messageContent,
+      reply_to_id: replyId,
+      reply_to_snippet: replySnippet,
+      reactions: {},
       created_at: new Date().toISOString(),
       is_me: true,
     };
@@ -322,6 +382,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     // 0ms Perception: Append locally immediately
     setMessages((prev) => [...prev, optimisticMessage]);
     setInputMessage('');
+    setReplyingTo(null);
 
     // Clear typing status immediately on send
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -340,6 +401,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       sender_name: user.name,
       receiver_id: activeFriend.user_id,
       content: messageContent,
+      reply_to_id: replyId,
+      reply_to_snippet: replySnippet,
     };
 
     try {
@@ -361,6 +424,138 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     } catch (err) {
       console.error('Error sending message', err);
       onShowToast('Message delivery failed: check server.');
+    }
+  };
+
+  // 7b. WhatsApp Voice Audio Notes Recording
+  const handleStartVoiceRecord = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      onShowToast('Microphone recording not supported on this browser.');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.start();
+      setIsRecordingVoice(true);
+      setVoiceRecordSeconds(0);
+
+      if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = setInterval(() => {
+        setVoiceRecordSeconds((s) => s + 1);
+      }, 1000);
+    } catch (err: any) {
+      onShowToast(`Microphone error: ${err.message || 'Permission denied'}`);
+    }
+  };
+
+  const handleCancelVoiceRecord = () => {
+    if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stream?.getTracks().forEach((t) => t.stop());
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecordingVoice(false);
+    setVoiceRecordSeconds(0);
+    audioChunksRef.current = [];
+    onShowToast('Voice note discarded');
+  };
+
+  const handleStopAndSendVoiceRecord = async () => {
+    if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+    if (!mediaRecorderRef.current || !activeFriend || !user) return;
+
+    const durationSec = voiceRecordSeconds;
+    setIsRecordingVoice(false);
+    setVoiceRecordSeconds(0);
+
+    mediaRecorderRef.current.onstop = async () => {
+      mediaRecorderRef.current?.stream?.getTracks().forEach((t) => t.stop());
+      const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      const audioFile = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+      audioChunksRef.current = [];
+
+      onShowToast('Delivering voice note…');
+
+      const formData = new FormData();
+      formData.append('file', audioFile);
+
+      try {
+        const uploadRes = await fetch('http://localhost:8000/api/v1/files/upload', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (uploadRes.ok) {
+          const fileData = await uploadRes.json();
+          const durStr = `${Math.floor(durationSec / 60)}:${durationSec % 60 < 10 ? '0' : ''}${durationSec % 60}`;
+
+          const msgPayload = {
+            conversation_id: activeFriend.conversation_id,
+            sender_id: user.id,
+            sender_name: user.name,
+            receiver_id: activeFriend.user_id,
+            content: '🎤 Voice note',
+            file_url: fileData.file_url,
+            file_name: fileData.file_name,
+            file_size: durStr,
+            file_type: 'audio/webm',
+          };
+
+          const sendRes = await fetch('http://localhost:8000/api/v1/messages/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(msgPayload),
+          });
+
+          if (sendRes.ok) {
+            const sent = await sendRes.json();
+            setMessages((prev) => [...prev, { ...sent.message, is_me: true }]);
+            onShowToast('Voice note sent!');
+          }
+        }
+      } catch (e) {
+        onShowToast('Failed to send voice note');
+      }
+    };
+
+    if (mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  // 7c. Emoji Reactions
+  const handleReactToMessage = async (messageId: string, emoji: string) => {
+    if (!user) return;
+    try {
+      const res = await fetch('http://localhost:8000/api/v1/messages/react', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message_id: messageId,
+          user_id: user.id,
+          user_name: user.name,
+          emoji,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMessages((prev) =>
+          prev.map((m) => (m.id === messageId ? { ...m, reactions: data.reactions } : m))
+        );
+      }
+    } catch (e) {
+      console.warn('React error', e);
     }
   };
 
@@ -578,10 +773,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-[#121f33] ${
                           f.status === 'online'
                             ? 'bg-[#12a878]'
+                            : f.status === 'in_call'
+                            ? 'bg-[#9b83f7] animate-pulse'
                             : f.status === 'away'
                             ? 'bg-[#d17b22]'
-                            : f.status === 'busy'
-                            ? 'bg-[#f04454]'
                             : 'bg-[#9aa9c0]'
                         }`}
                       />
@@ -592,13 +787,24 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         <b className="text-xs font-bold text-[#182044] dark:text-[#f1f3ff] truncate">
                           {f.name}
                         </b>
-                        <span className="text-[10px] text-[var(--accent)] font-semibold">
+                        {f.status === 'in_call' ? (
+                          <span className="text-[9px] text-[#b39dfa] font-bold flex items-center gap-0.5 bg-[#9b83f7]/15 px-1.5 py-0.2 rounded">
+                            <Phone className="w-2.5 h-2.5" /> in call
+                          </span>
+                        ) : f.status === 'online' ? (
+                          <span className="text-[9px] text-[#12a878] font-bold">online</span>
+                        ) : (
+                          <span className="text-[9px] text-[#8491a5]">offline</span>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-[#6f7899] dark:text-[#aeb8dc] mt-0.5">
+                        <span className="text-[10px] text-[var(--accent)] font-semibold truncate">
                           @{f.connect_id}
                         </span>
+                        <span className="text-[10px] opacity-75 truncate max-w-[90px]">
+                          {f.bio || 'Connected teammate'}
+                        </span>
                       </div>
-                      <p className="text-[11px] text-[#6f7899] dark:text-[#aeb8dc] truncate mt-0.5 m-0">
-                        {f.bio || 'Connected teammate'}
-                      </p>
                     </div>
                   </div>
                 );
@@ -754,26 +960,70 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               <div className="h-64 flex flex-col items-center justify-center text-center text-[#71809a]">
                 <MessageSquare className="w-10 h-10 mb-2 opacity-30 text-[var(--accent)]" />
                 <p className="text-xs font-bold text-[#182044] dark:text-[#f1f3ff]">Connected with @{activeFriend.connect_id}</p>
-                <span className="text-[11px] text-[#8491a5] mt-0.5">Send a message or share files to start collaborating!</span>
+                <span className="text-[11px] text-[#8491a5] mt-0.5">Send a message, audio voice note, or files to collaborate!</span>
               </div>
             ) : (
               messages.map((m) => {
                 const isMe = m.sender_id === user?.id;
                 const isImage = m.file_type?.startsWith('image/') || (m.file_name && /\.(png|jpe?g|gif|webp)$/i.test(m.file_name));
+                const isAudio = m.file_type?.startsWith('audio/') || (m.file_name && /\.(webm|mp3|wav|ogg)$/i.test(m.file_name)) || m.content === '🎤 Voice note';
+
                 return (
                   <div
                     key={m.id}
-                    className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-full`}
+                    className={`group relative flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-full`}
                   >
+                    {/* Floating Reaction Bar & Reply (WhatsApp style hover) */}
                     <div
-                      className={`max-w-[75%] p-3.5 rounded-2xl shadow-sm text-xs leading-relaxed ${
+                      className={`opacity-0 group-hover:opacity-100 transition-opacity absolute -top-8 flex items-center gap-1 bg-[#141b43]/90 dark:bg-[#0c1230]/90 backdrop-blur-md px-2 py-0.5 rounded-full border border-white/20 shadow-xl z-20 ${
+                        isMe ? 'right-0' : 'left-0'
+                      }`}
+                    >
+                      {['❤️', '👍', '😂', '🔥', '👏', '🚀'].map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={() => handleReactToMessage(m.id, emoji)}
+                          className="hover:scale-125 transition-transform text-xs p-1 cursor-pointer"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setReplyingTo({ id: m.id, sender_name: m.sender_name, content: m.content || m.file_name || 'Attachment' })}
+                        className="hover:scale-110 transition-transform text-white/70 hover:text-white p-1 ml-1 border-l border-white/20 pl-1.5 cursor-pointer"
+                        title="Reply"
+                      >
+                        <Reply className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div
+                      className={`max-w-[80%] sm:max-w-[70%] p-3.5 rounded-2xl shadow-sm text-xs leading-relaxed relative ${
                         isMe
                           ? 'bg-gradient-to-r from-[#718bff] to-[#9b83f7] text-white rounded-br-sm'
                           : 'bg-white dark:bg-[#151c3b] text-[#182044] dark:text-[#eef1ff] border border-black/5 dark:border-white/10 rounded-bl-sm'
                       }`}
                     >
-                      {/* Attached File Preview (WhatsApp Style) */}
-                      {m.file_url && (
+                      {/* Quoted Reply Block */}
+                      {m.reply_to_snippet && (
+                        <div
+                          className={`mb-2 p-2 rounded-xl text-[11px] border-l-2 ${
+                            isMe
+                              ? 'bg-white/15 border-white text-white/95'
+                              : 'bg-black/5 dark:bg-white/5 border-[var(--accent)] text-[#40516c] dark:text-[#aeb8dc]'
+                          }`}
+                        >
+                          <span className="font-bold block truncate opacity-90">{m.reply_to_snippet}</span>
+                        </div>
+                      )}
+
+                      {/* WhatsApp Style Voice Audio Note */}
+                      {isAudio && m.file_url ? (
+                        <VoiceNotePlayer audioUrl={m.file_url} duration={m.file_size} isMe={isMe} />
+                      ) : m.file_url ? (
+                        /* Attached Image or File Preview */
                         <div className="mb-2">
                           {isImage ? (
                             <div className="rounded-xl overflow-hidden border border-white/20 mb-1 max-w-sm">
@@ -807,13 +1057,38 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                             </div>
                           )}
                         </div>
-                      )}
+                      ) : null}
 
-                      {/* Text content */}
-                      {m.content && (!m.file_url || !m.content.startsWith('Shared file:')) && (
+                      {/* Regular Text Content */}
+                      {m.content && (!m.file_url || (!m.content.startsWith('Shared file:') && m.content !== '🎤 Voice note')) && (
                         <p className="m-0 break-words">{m.content}</p>
                       )}
                     </div>
+
+                    {/* Emoji Reaction Badges Below Message */}
+                    {m.reactions && Object.keys(m.reactions).length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1 px-1">
+                        {Object.entries(m.reactions).map(([emoji, users]) => {
+                          const hasReacted = users.includes(user?.name || '');
+                          return (
+                            <button
+                              key={emoji}
+                              type="button"
+                              onClick={() => handleReactToMessage(m.id, emoji)}
+                              title={users.join(', ')}
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
+                                hasReacted
+                                  ? 'bg-[var(--accent)]/20 border-[var(--accent)] text-[var(--accent)] font-black'
+                                  : 'bg-white/70 dark:bg-white/10 border-black/5 dark:border-white/10 text-[#40516c] dark:text-[#cbd4ff]'
+                              }`}
+                            >
+                              <span>{emoji}</span>
+                              <span>{users.length}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
 
                     <div className="flex items-center gap-1 mt-1 text-[10px] text-[#8491a5] dark:text-[#8898b3] px-1">
                       <span>{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
@@ -826,43 +1101,101 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Message Input Box with Attachment Button */}
-          <form onSubmit={handleSendMessage} className="p-4 border-t border-black/5 dark:border-white/10 bg-white/40 dark:bg-white/5 flex items-center gap-2">
-            {/* File Attachment Trigger */}
-            <button
-              type="button"
-              disabled={isUploading}
-              onClick={() => fileInputRef.current?.click()}
-              title="Share photo, video, document, or audio"
-              className="w-10 h-10 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-[var(--accent)] hover:text-white text-[#6f7899] dark:text-[#cbd4ff] transition-all cursor-pointer disabled:opacity-50 shadow-sm"
-            >
-              {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
-            </button>
+          {/* Replying Banner (if user clicked reply on any message) */}
+          {replyingTo && (
+            <div className="px-5 py-2 bg-[var(--accent)]/15 border-t border-black/5 dark:border-white/10 flex items-center justify-between text-xs text-[#182044] dark:text-[#f1f3ff] animate-in fade-in duration-150">
+              <div className="flex items-center gap-2 truncate">
+                <Reply className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                <span className="truncate">
+                  Replying to <b className="text-[var(--accent)]">{replyingTo.sender_name}</b>: {replyingTo.content}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReplyingTo(null)}
+                className="w-6 h-6 rounded-full hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center shrink-0 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
-            <button
-              type="button"
-              onClick={() => onShowToast('Audio note recording ready')}
-              className="w-10 h-10 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-black/10 text-[#6f7899] dark:text-[#cbd4ff] transition-all cursor-pointer"
-            >
-              <Mic className="w-4 h-4" />
-            </button>
+          {/* Message Input Box with Voice Note Recording (WhatsApp style) */}
+          <div className="p-4 border-t border-black/5 dark:border-white/10 bg-white/40 dark:bg-white/5">
+            {isRecordingVoice ? (
+              /* Live Voice Recording UI */
+              <div className="h-12 px-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between gap-4 animate-in fade-in duration-200">
+                <div className="flex items-center gap-3">
+                  <div className="w-3 h-3 rounded-full bg-rose-500 animate-ping" />
+                  <span className="text-xs font-bold text-rose-500 flex items-center gap-1.5">
+                    Recording Audio… {Math.floor(voiceRecordSeconds / 60)}:{voiceRecordSeconds % 60 < 10 ? '0' : ''}{voiceRecordSeconds % 60}
+                  </span>
+                </div>
 
-            <input
-              type="text"
-              value={inputMessage}
-              onChange={handleInputChange}
-              placeholder={`Message @${activeFriend.connect_id}...`}
-              className="flex-1 h-10 px-4 rounded-xl border border-[#cbd5ff]/60 dark:border-white/10 bg-white/80 dark:bg-[#0c1230] text-xs text-[#182044] dark:text-[#eef1ff] placeholder-[#71809a] focus:outline-none focus:border-[var(--accent)] shadow-inner"
-            />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCancelVoiceRecord}
+                    title="Discard voice note"
+                    className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-rose-500/20 text-rose-400 font-bold text-xs flex items-center gap-1 transition-all cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Cancel</span>
+                  </button>
 
-            <button
-              type="submit"
-              disabled={!inputMessage.trim()}
-              className="w-10 h-10 rounded-xl bg-gradient-to-r from-[#718bff] to-[#9b83f7] hover:brightness-110 active:scale-95 text-white flex items-center justify-center transition-all cursor-pointer shadow-md shadow-[#718bff]/30 disabled:opacity-40"
-            >
-              <Send className="w-4 h-4" />
-            </button>
-          </form>
+                  <button
+                    type="button"
+                    onClick={handleStopAndSendVoiceRecord}
+                    title="Send voice note"
+                    className="px-4 py-1.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-rose-500/30 transition-all cursor-pointer"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Send Audio</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Normal Input Box */
+              <form onSubmit={handleSendMessage} className="flex items-center gap-2">
+                {/* File Attachment Trigger */}
+                <button
+                  type="button"
+                  disabled={isUploading}
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Share photo, video, document, or audio"
+                  className="w-10 h-10 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-[var(--accent)] hover:text-white text-[#6f7899] dark:text-[#cbd4ff] transition-all cursor-pointer disabled:opacity-50 shadow-sm"
+                >
+                  {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+                </button>
+
+                {/* WhatsApp Mic Recording Trigger */}
+                <button
+                  type="button"
+                  onClick={handleStartVoiceRecord}
+                  title="Record voice note (WhatsApp style)"
+                  className="w-10 h-10 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-rose-500 hover:text-white text-[#6f7899] dark:text-[#cbd4ff] transition-all cursor-pointer shadow-sm active:scale-95"
+                >
+                  <Mic className="w-4 h-4" />
+                </button>
+
+                <input
+                  type="text"
+                  value={inputMessage}
+                  onChange={handleInputChange}
+                  placeholder={`Message @${activeFriend.connect_id}...`}
+                  className="flex-1 h-10 px-4 rounded-xl border border-[#cbd5ff]/60 dark:border-white/10 bg-white/80 dark:bg-[#0c1230] text-xs text-[#182044] dark:text-[#eef1ff] placeholder-[#71809a] focus:outline-none focus:border-[var(--accent)] shadow-inner"
+                />
+
+                <button
+                  type="submit"
+                  disabled={!inputMessage.trim()}
+                  className="w-10 h-10 rounded-xl bg-gradient-to-r from-[#718bff] to-[#9b83f7] hover:brightness-110 active:scale-95 text-white flex items-center justify-center transition-all cursor-pointer shadow-md shadow-[#718bff]/30 disabled:opacity-40"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </form>
+            )}
+          </div>
         </div>
       ) : (
         /* Empty Right Pane when no friend is selected */
