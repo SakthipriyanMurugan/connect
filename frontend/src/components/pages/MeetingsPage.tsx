@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 
 interface MeetingsPageProps {
-  onStartCall: (title: string) => void;
+  onStartCall: (title: string, roomName?: string) => void;
   onShowToast: (msg: string) => void;
 }
 
@@ -85,7 +85,7 @@ export const MeetingsPage: React.FC<MeetingsPageProps> = ({ onStartCall, onShowT
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => onStartCall('Instant Room (WebRTC)')}
+            onClick={() => onStartCall('Instant Room (LiveKit)', 'room-instant-' + Date.now())}
             className="px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#718bff] to-[#9b83f7] hover:brightness-110 active:scale-95 shadow-md shadow-[#718bff]/30 transition-all cursor-pointer flex items-center gap-2"
           >
             <Video className="w-4 h-4" />
@@ -118,7 +118,7 @@ export const MeetingsPage: React.FC<MeetingsPageProps> = ({ onStartCall, onShowT
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => onStartCall('Instant Room (WebRTC)')}
+              onClick={() => onStartCall('Instant Room (LiveKit)', 'room-instant-' + Date.now())}
               className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#718bff] to-[#9b83f7] shadow-md"
             >
               Start Instant Call
@@ -206,7 +206,7 @@ export const MeetingsPage: React.FC<MeetingsPageProps> = ({ onStartCall, onShowT
 
                 <button
                   type="button"
-                  onClick={() => onStartCall(m.title)}
+                  onClick={() => onStartCall(m.title, 'room-' + m.id)}
                   className="px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm bg-gradient-to-r from-[#718bff] to-[#9b83f7] text-white hover:brightness-110 shadow-[#718bff]/30"
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />

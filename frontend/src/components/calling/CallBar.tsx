@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Mic, MicOff, Video, VideoOff, ScreenShare, PhoneOff } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, ScreenShare, PhoneOff, Maximize2 } from 'lucide-react';
 
 interface CallBarProps {
   activeCallTitle: string | null;
   onEndCall: () => void;
   onShowToast: (msg: string) => void;
+  onExpand?: () => void;
 }
 
-export const CallBar: React.FC<CallBarProps> = ({ activeCallTitle, onEndCall, onShowToast }) => {
+export const CallBar: React.FC<CallBarProps> = ({ activeCallTitle, onEndCall, onShowToast, onExpand }) => {
   const [seconds, setSeconds] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(true);
@@ -53,11 +54,15 @@ export const CallBar: React.FC<CallBarProps> = ({ activeCallTitle, onEndCall, on
         {activeCallTitle.slice(0, 2).toUpperCase()}
       </div>
 
-      <div className="hidden sm:block min-w-[120px]">
+      <div 
+        onClick={onExpand}
+        className="hidden sm:block min-w-[120px] cursor-pointer hover:opacity-90 transition-opacity"
+        title="Click to expand video call"
+      >
         <b className="text-xs font-bold block truncate max-w-[160px]">{activeCallTitle}</b>
         <small className="text-[10px] text-[#b6c5dd] flex items-center gap-1.5 font-medium">
           <span className="w-1.5 h-1.5 rounded-full bg-[#12a878] animate-pulse" />
-          Connected · {formatTime(seconds)}
+          Connected · {formatTime(seconds)} (Click to expand)
         </small>
       </div>
 
@@ -97,6 +102,18 @@ export const CallBar: React.FC<CallBarProps> = ({ activeCallTitle, onEndCall, on
         >
           <ScreenShare className="w-4 h-4" />
         </button>
+
+        {/* Expand Modal */}
+        {onExpand && (
+          <button
+            type="button"
+            onClick={onExpand}
+            title="Expand call modal"
+            className="w-8 h-8 rounded-full bg-[#34445e] hover:bg-[#435777] flex items-center justify-center text-white transition-all cursor-pointer"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </button>
+        )}
 
         {/* End Call */}
         <button

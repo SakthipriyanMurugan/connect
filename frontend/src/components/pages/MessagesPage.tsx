@@ -26,7 +26,7 @@ import {
 import type { ChatMessage, ConnectionUser, SearchUserResult } from '../../types';
 
 interface MessagesPageProps {
-  onStartCall: (name: string) => void;
+  onStartCall: (name: string, callType?: 'video' | 'audio', targetUserId?: string, targetConnectId?: string) => void;
   onShowToast: (msg: string) => void;
 }
 
@@ -608,7 +608,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => onStartCall(`${activeFriend.name} (@${activeFriend.connect_id}) - Audio`)}
+                onClick={() => onStartCall(activeFriend.name, 'audio', activeFriend.user_id, activeFriend.connect_id)}
                 title="Voice call"
                 className="w-9 h-9 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-[var(--accent)] hover:text-white border border-black/5 dark:border-white/10 text-[#40516c] dark:text-[#cbd4ff] transition-all cursor-pointer shadow-sm"
               >
@@ -616,7 +616,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               </button>
               <button
                 type="button"
-                onClick={() => onStartCall(`${activeFriend.name} (@${activeFriend.connect_id}) - Video`)}
+                onClick={() => onStartCall(activeFriend.name, 'video', activeFriend.user_id, activeFriend.connect_id)}
                 title="Video call"
                 className="w-9 h-9 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-[var(--accent)] hover:text-white border border-black/5 dark:border-white/10 text-[#40516c] dark:text-[#cbd4ff] transition-all cursor-pointer shadow-sm"
               >

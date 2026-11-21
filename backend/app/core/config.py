@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     CLOUDFLARE_API_TOKEN: str = os.getenv("CLOUDFLARE_API_TOKEN", "cfoat__Rf4jKIRirdA7vsKbtfxs_HBKfYHNPGpFJVfxOleo-8.PDHYtKtUkwSxdvefHZGBLE-iqeSDQSHWCHuzBoQkgFA")
     USE_CLOUDFLARE_D1: bool = os.getenv("USE_CLOUDFLARE_D1", "true").lower() == "true"
 
+    # LiveKit WebRTC Cloud
+    LIVEKIT_URL: str = os.getenv("LIVEKIT_URL", "wss://connect-jflh7xn8.livekit.cloud")
+    LIVEKIT_API_KEY: str = os.getenv("LIVEKIT_API_KEY", "APIFkMSYvVwXjJF")
+    LIVEKIT_API_SECRET: str = os.getenv("LIVEKIT_API_SECRET", "MVlBFHjJfCe3yuuTY4WjUiI5LQGdXuMUQtD6AWN9fIgA")
+
     # Groq / Gemini API keys (Optional)
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")

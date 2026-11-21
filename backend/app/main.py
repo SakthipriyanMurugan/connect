@@ -19,6 +19,7 @@ from app.db.d1_client import d1
 from app.models.base import User as UserModel, UserConnection as ConnectionModel, Message as MessageModel
 from app.core.security import hash_password, verify_password, create_access_token
 from app.services.email_service import send_otp_email
+from livekit import api as livekit_api
 
 # Ensure uploads folder exists
 UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
@@ -145,6 +146,13 @@ class SendMessageModel(BaseModel):
     file_name: Optional[str] = None
     file_size: Optional[str] = None
     file_type: Optional[str] = None
+
+class LiveKitTokenRequest(BaseModel):
+    room_name: str
+    participant_identity: str
+    participant_name: Optional[str] = None
+    can_publish: bool = True
+    can_subscribe: bool = True
 
 class UserResponse(BaseModel):
     id: str
@@ -781,7 +789,31 @@ async def upload_file(file: UploadFile = File(...)):
         "file_type": file.content_type
     }
 
-# 14. Realtime WebSocket for direct messaging, presence, and invites
+# 14. LiveKit Cloud Access Token Generation
+@app.post(f"{settings.API_V1_STR}/livekit/token")
+def get_livekit_token(req: LiveKitTokenRequest):
+    if not settings.LIVEKIT_API_KEY or not settings.LIVEKIT_API_SECRET:
+        raise HTTPException(status_code=500, detail="LiveKit credentials not configured on backend.")
+
+    token = livekit_api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET) \
+        .with_identity(req.participant_identity) \
+        .with_name(req.participant_name or req.participant_identity) \
+        .with_grants(livekit_api.VideoGrants(
+            room_join=True,
+            room=req.room_name,
+            can_publish=req.can_publish,
+            can_subscribe=req.can_subscribe
+        ))
+
+    return {
+        "success": True,
+        "token": token.to_jwt(),
+        "url": settings.LIVEKIT_URL,
+        "room_name": req.room_name,
+        "participant_identity": req.participant_identity
+    }
+
+# 15. Realtime WebSocket for direct messaging, presence, and WebRTC/LiveKit call signaling
 @app.websocket(f"{settings.API_V1_STR}/ws/{{user_id}}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     await manager.connect(user_id, websocket)
@@ -805,6 +837,35 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "type": "typing",
                         "sender_id": user_id,
                         "is_typing": data.get("is_typing", True)
+                    })
+            elif msg_type == "call_invite":
+                target_user_id = data.get("target_user_id")
+                if target_user_id:
+                    await manager.send_to_user(target_user_id, {
+                        "type": "incoming_call",
+                        "caller_id": user_id,
+                        "caller_name": data.get("caller_name", "Teammate"),
+                        "caller_connect_id": data.get("caller_connect_id", ""),
+                        "caller_avatar": data.get("caller_avatar", ""),
+                        "room_name": data.get("room_name"),
+                        "call_type": data.get("call_type", "video")
+                    })
+            elif msg_type == "call_response":
+                target_user_id = data.get("target_user_id")
+                if target_user_id:
+                    await manager.send_to_user(target_user_id, {
+                        "type": "call_response",
+                        "responder_id": user_id,
+                        "accepted": data.get("accepted", False),
+                        "room_name": data.get("room_name")
+                    })
+            elif msg_type == "call_ended":
+                target_user_id = data.get("target_user_id")
+                if target_user_id:
+                    await manager.send_to_user(target_user_id, {
+                        "type": "call_ended",
+                        "user_id": user_id,
+                        "room_name": data.get("room_name")
                     })
     except WebSocketDisconnect:
         manager.disconnect(user_id)

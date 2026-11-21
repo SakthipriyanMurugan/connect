@@ -15,14 +15,11 @@ class CloudflareD1Client:
         self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/d1/database/{self.database_id}/query"
         self._cached_token: Optional[str] = None
 
-    def _get_token(self) -> str:
-        if settings.CLOUDFLARE_API_TOKEN:
-            return settings.CLOUDFLARE_API_TOKEN
-        
-        if self._cached_token:
+    def _get_token(self, force_refresh: bool = False) -> str:
+        if not force_refresh and self._cached_token:
             return self._cached_token
 
-        # Auto-detect from Wrangler config if available
+        # Check default.toml first for latest active OAuth token
         candidates = [
             Path(os.environ.get("APPDATA", "")) / "xdg.config" / ".wrangler" / "config" / "default.toml",
             Path.home() / ".config" / ".wrangler" / "config" / "default.toml"
@@ -37,6 +34,10 @@ class CloudflareD1Client:
                             return token
                 except Exception as e:
                     logger.warning(f"Failed to read wrangler token from {p}: {e}")
+
+        if settings.CLOUDFLARE_API_TOKEN:
+            self._cached_token = settings.CLOUDFLARE_API_TOKEN
+            return settings.CLOUDFLARE_API_TOKEN
         
         return ""
 
@@ -50,13 +51,8 @@ class CloudflareD1Client:
             logger.warning("Cloudflare D1 token not found. Skipping D1 execution.")
             return {"success": False, "results": []}
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
         payload: Dict[str, Any] = {"sql": sql}
         if params is not None:
-            # Format params for JSON serialization (convert datetime to ISO string if needed)
             formatted_params = []
             for p in params:
                 if hasattr(p, "isoformat"):
@@ -67,7 +63,15 @@ class CloudflareD1Client:
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
+                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
                 res = await client.post(self.base_url, json=payload, headers=headers)
+                
+                # If token expired (401), refresh token and retry once
+                if res.status_code == 401:
+                    token = self._get_token(force_refresh=True)
+                    headers["Authorization"] = f"Bearer {token}"
+                    res = await client.post(self.base_url, json=payload, headers=headers)
+
                 if res.status_code == 200:
                     data = res.json()
                     if data.get("success") and data.get("result"):
