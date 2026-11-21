@@ -58,6 +58,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const activeFriendRef = useRef<ConnectionUser | null>(activeFriend);
+  const typingTimeoutRef = useRef<any>(null);
+
+  useEffect(() => {
+    activeFriendRef.current = activeFriend;
+  }, [activeFriend]);
 
   // Scroll to bottom of chat
   const scrollToBottom = () => {
@@ -94,44 +100,78 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
   useEffect(() => {
     fetchConnections();
-  }, [user]);
+  }, [user?.id]);
 
   // 2. Real-time WebSocket connection for user-isolated events
   useEffect(() => {
-    if (!user) return;
-    const ws = new WebSocket(`ws://localhost:8000/api/v1/ws/${user.id}`);
-    wsRef.current = ws;
+    if (!user?.id) return;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: any = null;
 
-    ws.onmessage = (event) => {
+    const connectWS = () => {
       try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'new_message') {
-          const newMsg: ChatMessage = data.message;
-          // If message belongs to current open conversation
-          if (activeFriend?.conversation_id === newMsg.conversation_id) {
-            setMessages((prev) => [...prev, newMsg]);
+        ws = new WebSocket(`ws://localhost:8000/api/v1/ws/${user.id}`);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          console.log('[Messages WS] Connected for user:', user.id);
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            
+            // Forward call signaling redundancy
+            if (['incoming_call', 'call_response', 'call_ended'].includes(data.type)) {
+              window.dispatchEvent(new CustomEvent('vertex_call_signaling', { detail: data }));
+              return;
+            }
+
+            if (data.type === 'new_message') {
+              const newMsg: ChatMessage = data.message;
+              // If message belongs to current open conversation
+              if (activeFriendRef.current?.conversation_id === newMsg.conversation_id) {
+                setMessages((prev) => {
+                  if (prev.some((m) => m.id === newMsg.id)) return prev;
+                  return [...prev, newMsg];
+                });
+              }
+              onShowToast(`New message from ${newMsg.sender_name}`);
+            } else if (data.type === 'connection_request') {
+              onShowToast('You received a new connection request!');
+              fetchConnections();
+            } else if (data.type === 'connection_accepted') {
+              onShowToast('Connection accepted! You can now chat.');
+              fetchConnections();
+            } else if (data.type === 'typing') {
+              if (activeFriendRef.current && data.sender_id === activeFriendRef.current.user_id) {
+                setIsTyping(!!data.is_typing);
+              }
+            }
+          } catch (err) {
+            console.error('WS parse error', err);
           }
-          onShowToast(`New message from ${newMsg.sender_name}`);
-        } else if (data.type === 'connection_request') {
-          onShowToast('You received a new connection request!');
-          fetchConnections();
-        } else if (data.type === 'connection_accepted') {
-          onShowToast('Connection accepted! You can now chat.');
-          fetchConnections();
-        } else if (data.type === 'typing') {
-          if (activeFriend && data.sender_id === activeFriend.user_id) {
-            setIsTyping(!!data.is_typing);
-          }
-        }
+        };
+
+        ws.onclose = () => {
+          wsRef.current = null;
+          reconnectTimer = setTimeout(connectWS, 3000);
+        };
       } catch (err) {
-        console.error('WS parse error', err);
+        console.error('WS connection error', err);
       }
     };
 
+    connectWS();
+
     return () => {
-      ws.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) {
+        ws.close();
+        wsRef.current = null;
+      }
     };
-  }, [user, activeFriend]);
+  }, [user?.id]);
 
   // 3. Fetch message history when active friend changes
   useEffect(() => {
@@ -232,20 +272,75 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }
   };
 
-  // 7. Send Real-Time Text Message
+  // Real-Time Typing Emitter
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setInputMessage(val);
+
+    if (activeFriend && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'typing',
+          target_user_id: activeFriend.user_id,
+          is_typing: true,
+        })
+      );
+
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && activeFriend) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: 'typing',
+              target_user_id: activeFriend.user_id,
+              is_typing: false,
+            })
+          );
+        }
+      }, 1800);
+    }
+  };
+
+  // 7. Send Real-Time Text Message (Instant Optimistic UI)
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputMessage.trim() || !user || !activeFriend) return;
+
+    const messageContent = inputMessage.trim();
+    const tempId = `temp_${Date.now()}`;
+    const optimisticMessage: ChatMessage = {
+      id: tempId,
+      conversation_id: activeFriend.conversation_id || '',
+      sender_id: user.id,
+      sender_name: user.name,
+      receiver_id: activeFriend.user_id,
+      content: messageContent,
+      created_at: new Date().toISOString(),
+      is_me: true,
+    };
+
+    // 0ms Perception: Append locally immediately
+    setMessages((prev) => [...prev, optimisticMessage]);
+    setInputMessage('');
+
+    // Clear typing status immediately on send
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'typing',
+          target_user_id: activeFriend.user_id,
+          is_typing: false,
+        })
+      );
+    }
 
     const payload = {
       conversation_id: activeFriend.conversation_id,
       sender_id: user.id,
       sender_name: user.name,
       receiver_id: activeFriend.user_id,
-      content: inputMessage.trim(),
+      content: messageContent,
     };
-
-    setInputMessage('');
 
     try {
       const res = await fetch('http://localhost:8000/api/v1/messages/send', {
@@ -256,10 +351,16 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
       if (res.ok) {
         const data = await res.json();
-        setMessages((prev) => [...prev, data.message]);
+        // Replace temporary client message with server persisted record
+        setMessages((prev) =>
+          prev.map((m) => (m.id === tempId ? { ...data.message, is_me: true } : m))
+        );
+      } else {
+        onShowToast('Failed to deliver message.');
       }
     } catch (err) {
       console.error('Error sending message', err);
+      onShowToast('Message delivery failed: check server.');
     }
   };
 
@@ -749,7 +850,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             <input
               type="text"
               value={inputMessage}
-              onChange={(e) => setInputMessage(e.target.value)}
+              onChange={handleInputChange}
               placeholder={`Message @${activeFriend.connect_id}...`}
               className="flex-1 h-10 px-4 rounded-xl border border-[#cbd5ff]/60 dark:border-white/10 bg-white/80 dark:bg-[#0c1230] text-xs text-[#182044] dark:text-[#eef1ff] placeholder-[#71809a] focus:outline-none focus:border-[var(--accent)] shadow-inner"
             />

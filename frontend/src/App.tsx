@@ -42,49 +42,93 @@ const MainLayout: React.FC = () => {
     if (!user?.id) return;
 
     let ws: WebSocket | null = null;
-    try {
-      ws = new WebSocket(`ws://localhost:8000/api/v1/ws/${user.id}`);
-      wsRef.current = ws;
+    let reconnectTimeout: any = null;
 
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
+    const connectWS = () => {
+      try {
+        ws = new WebSocket(`ws://localhost:8000/api/v1/ws/${user.id}`);
+        wsRef.current = ws;
 
-          if (data.type === 'incoming_call') {
-            setIncomingCall({
-              caller_id: data.caller_id,
-              caller_name: data.caller_name || 'Teammate',
-              caller_connect_id: data.caller_connect_id,
-              caller_avatar: data.caller_avatar,
-              room_name: data.room_name,
-              call_type: data.call_type || 'video',
-            });
-          } else if (data.type === 'call_response') {
-            if (!data.accepted) {
-              showToast('Call was declined by teammate.');
+        ws.onopen = () => {
+          console.log('[Signaling WS] Connected for user:', user.id);
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'incoming_call') {
+              console.log('[Signaling WS] Incoming call event received:', data);
+              setIncomingCall({
+                caller_id: data.caller_id,
+                caller_name: data.caller_name || 'Teammate',
+                caller_connect_id: data.caller_connect_id,
+                caller_avatar: data.caller_avatar,
+                room_name: data.room_name,
+                call_type: data.call_type || 'video',
+              });
+            } else if (data.type === 'call_response') {
+              if (!data.accepted) {
+                showToast('Call was declined by teammate.');
+                setActiveCallSession(null);
+              } else {
+                showToast('Call accepted! Connecting LiveKit WebRTC stream…');
+              }
+            } else if (data.type === 'call_ended') {
+              showToast('Call ended by participant.');
               setActiveCallSession(null);
-            } else {
-              showToast('Call accepted! Connecting LiveKit WebRTC stream…');
+              setIsCallMinimized(false);
             }
-          } else if (data.type === 'call_ended') {
-            showToast('Call ended by participant.');
-            setActiveCallSession(null);
-            setIsCallMinimized(false);
+          } catch (e) {
+            console.warn('WS call signaling parse error:', e);
           }
-        } catch (e) {
-          console.warn('WS call signaling parse error:', e);
-        }
-      };
+        };
 
-      ws.onerror = (e) => console.warn('WebSocket signaling error:', e);
-      ws.onclose = () => {
-        wsRef.current = null;
-      };
-    } catch (e) {
-      console.warn('Failed to establish signaling socket:', e);
-    }
+        ws.onerror = (e) => console.warn('WebSocket signaling error:', e);
+        ws.onclose = () => {
+          wsRef.current = null;
+          // Auto reconnect after 3 seconds if user still logged in
+          reconnectTimeout = setTimeout(connectWS, 3000);
+        };
+      } catch (e) {
+        console.warn('Failed to establish signaling socket:', e);
+      }
+    };
+
+    connectWS();
+
+    // Listen to fallback signaling events from window
+    const handleSignalingEvent = (e: any) => {
+      const data = e.detail;
+      if (!data) return;
+      if (data.type === 'incoming_call') {
+        setIncomingCall({
+          caller_id: data.caller_id,
+          caller_name: data.caller_name || 'Teammate',
+          caller_connect_id: data.caller_connect_id,
+          caller_avatar: data.caller_avatar,
+          room_name: data.room_name,
+          call_type: data.call_type || 'video',
+        });
+      } else if (data.type === 'call_response') {
+        if (!data.accepted) {
+          showToast('Call was declined by teammate.');
+          setActiveCallSession(null);
+        } else {
+          showToast('Call accepted! Connecting LiveKit WebRTC stream…');
+        }
+      } else if (data.type === 'call_ended') {
+        showToast('Call ended by participant.');
+        setActiveCallSession(null);
+        setIsCallMinimized(false);
+      }
+    };
+
+    window.addEventListener('vertex_call_signaling', handleSignalingEvent);
 
     return () => {
+      window.removeEventListener('vertex_call_signaling', handleSignalingEvent);
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
       if (ws) {
         ws.close();
         wsRef.current = null;
@@ -128,6 +172,7 @@ const MainLayout: React.FC = () => {
       roomName,
       title,
       callType,
+      targetUserId,
     });
     setIsCallMinimized(false);
   };
@@ -151,6 +196,7 @@ const MainLayout: React.FC = () => {
       roomName: incomingCall.room_name,
       title: incomingCall.caller_name,
       callType: incomingCall.call_type,
+      targetUserId: incomingCall.caller_id,
       isIncoming: true,
     });
     setIsCallMinimized(false);
@@ -182,6 +228,7 @@ const MainLayout: React.FC = () => {
       wsRef.current.send(
         JSON.stringify({
           type: 'call_ended',
+          target_user_id: activeCallSession.targetUserId,
           room_name: activeCallSession.roomName,
         })
       );

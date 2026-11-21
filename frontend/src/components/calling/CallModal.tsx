@@ -26,6 +26,7 @@ export interface ActiveCallSession {
   roomName: string;
   title: string;
   callType: 'video' | 'audio';
+  targetUserId?: string;
   isIncoming?: boolean;
 }
 

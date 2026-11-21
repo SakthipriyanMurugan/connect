@@ -2,11 +2,12 @@ from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from datetime import datetime, timedelta
 import random
 import os
 import re
+import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -56,36 +57,47 @@ app.add_middleware(
 # Mount uploads static directory for attachments
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
-# Real-Time WebSocket Connection Manager
+# Real-Time WebSocket Connection Manager (Multi-socket & Multi-tab support per user)
 class ConnectionManager:
     def __init__(self):
-        # Maps user_id -> active WebSocket
-        self.active_users: Dict[str, WebSocket] = {}
+        # Maps user_id -> Set of active WebSockets
+        self.active_users: Dict[str, Set[WebSocket]] = {}
 
     async def connect(self, user_id: str, websocket: WebSocket):
         await websocket.accept()
-        self.active_users[user_id] = websocket
+        if user_id not in self.active_users:
+            self.active_users[user_id] = set()
+        self.active_users[user_id].add(websocket)
+        print(f"[WS] Connected user {user_id} (active sockets: {len(self.active_users[user_id])})")
 
-    def disconnect(self, user_id: str):
+    def disconnect(self, user_id: str, websocket: Optional[WebSocket] = None):
         if user_id in self.active_users:
-            del self.active_users[user_id]
+            if websocket and websocket in self.active_users[user_id]:
+                self.active_users[user_id].discard(websocket)
+            elif not websocket:
+                self.active_users[user_id].clear()
+
+            if not self.active_users[user_id]:
+                del self.active_users[user_id]
+                print(f"[WS] Disconnected user {user_id} (all sockets closed)")
+            else:
+                print(f"[WS] Closed one socket for user {user_id} (remaining: {len(self.active_users[user_id])})")
 
     async def send_to_user(self, user_id: str, message: dict):
         if user_id in self.active_users:
-            try:
-                await self.active_users[user_id].send_json(message)
-            except Exception:
-                self.disconnect(user_id)
+            dead_sockets = []
+            for ws in list(self.active_users[user_id]):
+                try:
+                    await ws.send_json(message)
+                except Exception as e:
+                    print(f"[WS] Failed delivery to socket for user {user_id}: {e}")
+                    dead_sockets.append(ws)
+            for ws in dead_sockets:
+                self.disconnect(user_id, ws)
 
     async def broadcast(self, message: dict):
-        disconnected = []
-        for uid, conn in self.active_users.items():
-            try:
-                await conn.send_json(message)
-            except Exception:
-                disconnected.append(uid)
-        for uid in disconnected:
-            self.disconnect(uid)
+        for uid in list(self.active_users.keys()):
+            await self.send_to_user(uid, message)
 
 manager = ConnectionManager()
 
@@ -589,19 +601,22 @@ async def request_connection(req: ConnectRequestModel, db: AsyncSession = Depend
     await db.commit()
     await db.refresh(new_conn)
 
-    # Sync connection to Cloudflare D1
-    try:
-        await d1.sync_connection(new_conn)
-    except Exception as e:
-        print(f"[Cloudflare D1] Connection sync notice: {e}")
-
-    # Notify target user via WebSocket if online
+    # Notify target user via WebSocket immediately (< 1ms)
     await manager.send_to_user(target.id, {
         "type": "connection_request",
         "connection_id": new_conn.id,
         "from_user_id": req.from_user_id,
         "message": "You received a new connection request!"
     })
+
+    # Background async sync connection to Cloudflare D1
+    async def bg_sync_conn():
+        try:
+            await d1.sync_connection(new_conn)
+        except Exception as e:
+            print(f"[Cloudflare D1] Background connection sync notice: {e}")
+
+    asyncio.create_task(bg_sync_conn())
 
     return {
         "success": True,
@@ -623,18 +638,21 @@ async def accept_connection(req: AcceptConnectModel, db: AsyncSession = Depends(
     conn.updated_at = datetime.utcnow()
     await db.commit()
 
-    # Sync accepted status to Cloudflare D1
-    try:
-        await d1.sync_connection(conn)
-    except Exception as e:
-        print(f"[Cloudflare D1] Accept sync notice: {e}")
-
-    # Notify requester
+    # Notify requester immediately via WebSocket (< 1ms)
     await manager.send_to_user(conn.requester_id, {
         "type": "connection_accepted",
         "connection_id": conn.id,
         "message": "Your connection request was accepted! You can now chat."
     })
+
+    # Background async sync accepted status to Cloudflare D1
+    async def bg_sync_accept():
+        try:
+            await d1.sync_connection(conn)
+        except Exception as e:
+            print(f"[Cloudflare D1] Background accept sync notice: {e}")
+
+    asyncio.create_task(bg_sync_accept())
 
     return {"success": True, "message": "Connection accepted! You can now chat."}
 
@@ -705,12 +723,6 @@ async def send_message(req: SendMessageModel, db: AsyncSession = Depends(get_db)
     await db.commit()
     await db.refresh(new_msg)
 
-    # Sync chat message to Cloudflare D1
-    try:
-        await d1.sync_message(new_msg)
-    except Exception as e:
-        print(f"[Cloudflare D1] Message sync notice: {e}")
-
     payload = {
         "id": new_msg.id,
         "conversation_id": new_msg.conversation_id,
@@ -725,7 +737,7 @@ async def send_message(req: SendMessageModel, db: AsyncSession = Depends(get_db)
         "created_at": new_msg.created_at.isoformat()
     }
 
-    # If receiver is specified, deliver directly to receiver
+    # Immediately deliver in real-time (< 1ms) to receiver
     if req.receiver_id:
         await manager.send_to_user(req.receiver_id, {
             "type": "new_message",
@@ -737,6 +749,15 @@ async def send_message(req: SendMessageModel, db: AsyncSession = Depends(get_db)
             "type": "new_message",
             "message": payload
         })
+
+    # Background async sync chat message to Cloudflare D1 (0 latency impact on user)
+    async def bg_sync_msg():
+        try:
+            await d1.sync_message(new_msg)
+        except Exception as e:
+            print(f"[Cloudflare D1] Background message sync notice: {e}")
+
+    asyncio.create_task(bg_sync_msg())
 
     return {"success": True, "message": payload}
 
@@ -837,6 +858,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     })
             elif msg_type == "call_invite":
                 target_user_id = data.get("target_user_id")
+                print(f"[WS Signaling] call_invite from {user_id} to {target_user_id}, room: {data.get('room_name')}")
                 if target_user_id:
                     await manager.send_to_user(target_user_id, {
                         "type": "incoming_call",
@@ -849,6 +871,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     })
             elif msg_type == "call_response":
                 target_user_id = data.get("target_user_id")
+                print(f"[WS Signaling] call_response from {user_id} to {target_user_id}, accepted: {data.get('accepted')}")
                 if target_user_id:
                     await manager.send_to_user(target_user_id, {
                         "type": "call_response",
@@ -858,6 +881,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     })
             elif msg_type == "call_ended":
                 target_user_id = data.get("target_user_id")
+                print(f"[WS Signaling] call_ended from {user_id} to {target_user_id}")
                 if target_user_id:
                     await manager.send_to_user(target_user_id, {
                         "type": "call_ended",
@@ -865,4 +889,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "room_name": data.get("room_name")
                     })
     except WebSocketDisconnect:
-        manager.disconnect(user_id)
+        manager.disconnect(user_id, websocket)
+    except Exception as e:
+        print(f"[WS Error] Exception in socket {user_id}: {e}")
+        manager.disconnect(user_id, websocket)
