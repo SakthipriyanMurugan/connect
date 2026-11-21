@@ -76,6 +76,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
     setLoading(false);
 
     if (res.success) {
+      setOtp('');
       setOtpPurpose(purpose);
       setMode('verify_otp');
       setResendCountdown(60);
@@ -387,7 +388,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                     <button
                       type="button"
                       onClick={() => {
-                        setMode('signup');
+                        setOtp('');
+                        setMode(otpPurpose === 'reset' ? 'forgot' : 'signup');
                         setNotice(null);
                       }}
                       className="text-[#9fa9ce] hover:underline"
@@ -534,6 +536,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                     <button
                       type="button"
                       onClick={() => {
+                        setOtp('');
                         setMode('login');
                         setNotice(null);
                       }}
@@ -589,6 +592,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                     <button
                       type="button"
                       onClick={() => {
+                        setOtp('');
                         setMode('login');
                         setNotice(null);
                       }}
