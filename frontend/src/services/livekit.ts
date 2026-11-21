@@ -1,4 +1,5 @@
 // LiveKit Cloud Service Helper
+import { API_BASE_URL } from '../config/api';
 
 export interface LiveKitTokenResponse {
   success: boolean;
@@ -13,7 +14,7 @@ export const fetchLiveKitToken = async (
   identity: string,
   name?: string
 ): Promise<LiveKitTokenResponse> => {
-  const res = await fetch('http://localhost:8000/api/v1/livekit/token', {
+  const res = await fetch(`${API_BASE_URL}/api/v1/livekit/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

@@ -10,6 +10,7 @@ import { CallModal, ActiveCallSession, CallEndStats } from './components/calling
 import { IncomingCallModal, IncomingCallData } from './components/calling/IncomingCallModal';
 import { MeetingIntelligenceModal } from './components/calling/MeetingIntelligenceModal';
 import type { MeetingIntelligenceReport } from './types';
+import { API_BASE_URL, WS_BASE_URL } from './config/api';
 import { MessagesPage } from './components/pages/MessagesPage';
 import { MeetingsPage } from './components/pages/MeetingsPage';
 import { IntelligencePage } from './components/pages/IntelligencePage';
@@ -59,7 +60,7 @@ const MainLayout: React.FC = () => {
 
     const connectWS = () => {
       try {
-        ws = new WebSocket(`ws://localhost:8000/api/v1/ws/${user.id}`);
+        ws = new WebSocket(`${WS_BASE_URL}/api/v1/ws/${user.id}`);
         wsRef.current = ws;
 
         ws.onopen = () => {
@@ -266,7 +267,7 @@ const MainLayout: React.FC = () => {
     if (stats && stats.duration_seconds > 0) {
       showToast('Generating AI Meeting Intelligence Report…');
       try {
-        const res = await fetch('http://localhost:8000/api/v1/intelligence/summarize', {
+        const res = await fetch(`${API_BASE_URL}/api/v1/intelligence/summarize`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

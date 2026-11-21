@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import type { ChatMessage, ConnectionUser, SearchUserResult } from '../../types';
 import { VoiceNotePlayer } from '../chat/VoiceNotePlayer';
+import { API_BASE_URL, WS_BASE_URL } from '../../config/api';
 
 interface MessagesPageProps {
   onStartCall: (name: string, callType?: 'video' | 'audio', targetUserId?: string, targetConnectId?: string) => void;
@@ -97,8 +98,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     setIsLoadingConnections(true);
     try {
       const [res, presenceRes] = await Promise.all([
-        fetch(`http://localhost:8000/api/v1/connections?user_id=${user.id}`),
-        fetch(`http://localhost:8000/api/v1/presence`).catch(() => null)
+        fetch(`${API_BASE_URL}/api/v1/connections?user_id=${user.id}`),
+        fetch(`${API_BASE_URL}/api/v1/presence`).catch(() => null)
       ]);
 
       let presenceMap: Record<string, any> = {};
@@ -145,7 +146,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
     const connectWS = () => {
       try {
-        ws = new WebSocket(`ws://localhost:8000/api/v1/ws/${user.id}`);
+        ws = new WebSocket(`${WS_BASE_URL}/api/v1/ws/${user.id}`);
         wsRef.current = ws;
 
         ws.onopen = () => {
@@ -236,7 +237,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
     const fetchMessages = async () => {
       try {
-        const res = await fetch(`http://localhost:8000/api/v1/messages/${activeFriend.conversation_id}`);
+        const res = await fetch(`${API_BASE_URL}/api/v1/messages/${activeFriend.conversation_id}`);
         if (res.ok) {
           const data: ChatMessage[] = await res.json();
           setMessages(data);
@@ -261,7 +262,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     setIsSearching(true);
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`http://localhost:8000/api/v1/users/search?q=${encodeURIComponent(raw)}&current_user_id=${user.id}`);
+        const res = await fetch(`${API_BASE_URL}/api/v1/users/search?q=${encodeURIComponent(raw)}&current_user_id=${user.id}`);
         if (res.ok) {
           const data = await res.json();
           setSearchResults(data);
@@ -280,7 +281,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const handleSendConnectRequest = async (targetConnectId: string) => {
     if (!user) return;
     try {
-      const res = await fetch('http://localhost:8000/api/v1/connections/request', {
+      const res = await fetch(`${API_BASE_URL}/api/v1/connections/request`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -308,7 +309,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const handleAcceptRequest = async (connectionId: string, friendName: string) => {
     if (!user) return;
     try {
-      const res = await fetch('http://localhost:8000/api/v1/connections/accept', {
+      const res = await fetch(`${API_BASE_URL}/api/v1/connections/accept`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -406,7 +407,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     };
 
     try {
-      const res = await fetch('http://localhost:8000/api/v1/messages/send', {
+      const res = await fetch(`${API_BASE_URL}/api/v1/messages/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -491,7 +492,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       formData.append('file', audioFile);
 
       try {
-        const uploadRes = await fetch('http://localhost:8000/api/v1/files/upload', {
+        const uploadRes = await fetch(`${API_BASE_URL}/api/v1/files/upload`, {
           method: 'POST',
           body: formData,
         });
@@ -512,7 +513,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             file_type: 'audio/webm',
           };
 
-          const sendRes = await fetch('http://localhost:8000/api/v1/messages/send', {
+          const sendRes = await fetch(`${API_BASE_URL}/api/v1/messages/send`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(msgPayload),
@@ -538,7 +539,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const handleReactToMessage = async (messageId: string, emoji: string) => {
     if (!user) return;
     try {
-      const res = await fetch('http://localhost:8000/api/v1/messages/react', {
+      const res = await fetch(`${API_BASE_URL}/api/v1/messages/react`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -571,7 +572,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     formData.append('file', file);
 
     try {
-      const uploadRes = await fetch('http://localhost:8000/api/v1/files/upload', {
+      const uploadRes = await fetch(`${API_BASE_URL}/api/v1/files/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -592,7 +593,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           file_type: fileData.file_type,
         };
 
-        const sendRes = await fetch('http://localhost:8000/api/v1/messages/send', {
+        const sendRes = await fetch(`${API_BASE_URL}/api/v1/messages/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(msgPayload),
