@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: vertex-connect-backend
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    rootDir: backend
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: PROJECT_NAME
+        value: "VERTEX CONNECT API"
+      - key: API_V1_STR
+        value: "/api/v1"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        value: "sqlite+aiosqlite:///./vertex_connect.db"
+      - key: USE_CLOUDFLARE_D1
+        value: "true"
+      - key: CLOUDFLARE_ACCOUNT_ID
+        value: "a1308b7963e86ae61a3cb215dd276bed"
+      - key: CLOUDFLARE_D1_DATABASE_ID
+        value: "6926e446-a98b-4c6f-9466-f9dc6d4966a9"
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
+      - key: LIVEKIT_URL
+        value: "wss://connect-jflh7xn8.livekit.cloud"
+      - key: LIVEKIT_API_KEY
+        value: "APIFkMSYvVwXjJF"
+      - key: LIVEKIT_API_SECRET
+        value: "MVlBFHjJfCe3yuuTY4WjUiI5LQGdXuMUQtD6AWN9fIgA"
+      - key: SMTP_SERVER
+        value: "smtp.gmail.com"
+      - key: SMTP_PORT
+        value: "465"
+      - key: SMTP_USER
+        value: "sakthihinata1205@gmail.com"
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: FROM_EMAIL
+        value: "sakthihinata1205@gmail.com"
+      - key: FROM_NAME
+        value: "VERTEX CONNECT"
