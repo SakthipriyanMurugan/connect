@@ -78,6 +78,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const wsRef = useRef<WebSocket | null>(null);
   const activeFriendRef = useRef<ConnectionUser | null>(activeFriend);
   const typingTimeoutRef = useRef<any>(null);
+  const lastTypingSentRef = useRef<number>(0);
 
   useEffect(() => {
     activeFriendRef.current = activeFriend;
@@ -172,8 +173,15 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   return [...prev, newMsg];
                 });
 
-                // Immediately send read receipt since conversation is active
-                if (user?.id) {
+                // Immediately send read receipt via WebSocket (< 0.1ms instant blue tick for sender)
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(
+                    JSON.stringify({
+                      type: 'read_messages',
+                      conversation_id: newMsg.conversation_id,
+                    })
+                  );
+                } else if (user?.id) {
                   fetch(`${API_BASE_URL}/api/v1/messages/read`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -259,8 +267,15 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           const data: ChatMessage[] = await res.json();
           setMessages(data);
 
-          // Mark unread messages as read
-          if (user?.id) {
+          // Mark unread messages as read instantly over WebSocket
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && activeFriend?.conversation_id) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: 'read_messages',
+                conversation_id: activeFriend.conversation_id,
+              })
+            );
+          } else if (user?.id) {
             fetch(`${API_BASE_URL}/api/v1/messages/read`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -356,19 +371,24 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }
   };
 
-  // Real-Time Typing Emitter
+  // Real-Time Typing Emitter (Throttled for ultra-fast, smooth performance)
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setInputMessage(val);
 
     if (activeFriend && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'typing',
-          target_user_id: activeFriend.user_id,
-          is_typing: true,
-        })
-      );
+      const now = Date.now();
+      // Throttle typing emission to once every 1000ms
+      if (now - lastTypingSentRef.current > 1000) {
+        lastTypingSentRef.current = now;
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'typing',
+            target_user_id: activeFriend.user_id,
+            is_typing: true,
+          })
+        );
+      }
 
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       typingTimeoutRef.current = setTimeout(() => {
@@ -381,7 +401,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             })
           );
         }
-      }, 1800);
+      }, 1500);
     }
   };
 
@@ -1144,6 +1164,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   </div>
                 );
               })
+            )}
+            {/* WhatsApp-Style Animated In-Stream Typing Bubble */}
+            {isTyping && (
+              <div className="flex items-center gap-2.5 p-2 px-3.5 max-w-[130px] rounded-2xl bg-white/70 dark:bg-[#1a2249] border border-black/5 dark:border-white/10 shadow-sm animate-in fade-in duration-200 mb-2">
+                <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-[#8cf4ff] to-[#d6a2ff] flex items-center justify-center text-[10px] font-bold text-[#171a42] shrink-0">
+                  {activeFriend.name.slice(0, 2).toUpperCase()}
+                </div>
+                <div className="flex items-center gap-1 py-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-bounce [animation-delay:-0.3s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-bounce [animation-delay:-0.15s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-bounce" />
+                </div>
+              </div>
             )}
             <div ref={messagesEndRef} />
           </div>

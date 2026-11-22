@@ -53,7 +53,7 @@ class CloudflareD1Client:
         # If refresh requested or first time, try to refresh wrangler token via CLI
         if force_refresh:
             try:
-                subprocess.run(["npx", "wrangler", "d1", "list"], capture_output=True, timeout=8, shell=True)
+                subprocess.run(["npx", "wrangler", "d1", "list"], capture_output=True, timeout=25, shell=True)
             except Exception as e:
                 logger.warning(f"Auto-refresh wrangler token notice: {e}")
 
