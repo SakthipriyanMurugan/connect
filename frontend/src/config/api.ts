@@ -14,9 +14,9 @@ if (isBrowser) {
   } catch {}
 }
 
-// 1. High-Speed Cloudflare Live Tunnel (Active SMTP Delivery)
-export const ACTIVE_TUNNEL_HTTP = 'https://dns-kijiji-cradle-mortgages.trycloudflare.com';
-export const ACTIVE_TUNNEL_WS = 'wss://dns-kijiji-cradle-mortgages.trycloudflare.com';
+// 1. High-Speed Cloudflare Live Tunnel (Active SMTP Delivery & Cloudflare D1)
+export const ACTIVE_TUNNEL_HTTP = 'https://printing-tide-tahoe-slope.trycloudflare.com';
+export const ACTIVE_TUNNEL_WS = 'wss://printing-tide-tahoe-slope.trycloudflare.com';
 
 // 2. 24/7 Permanent Cloud Backend (Render Cloud Web Service)
 export const RENDER_CLOUD_HTTP = 'https://vertex-connect-backend.onrender.com';
