@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import type { User, Workspace } from '../types';
-import { API_BASE_URL } from '../config/api';
+import { API_BASE_URL, autoDetectHealthyBackend } from '../config/api';
 
 interface AuthContextType {
   user: User | null;
@@ -74,9 +74,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [token]);
 
+  // Background health-check and auto-detection of healthy backend on startup
+  useEffect(() => {
+    autoDetectHealthyBackend().catch(() => {});
+  }, []);
+
+  const apiFetch = async (path: string, options: RequestInit = {}) => {
+    const base = localStorage.getItem('VERTEX_API_URL') || API_BASE_URL;
+    try {
+      return await fetch(`${base}${path}`, options);
+    } catch {
+      // Primary failed; failover to healthy backend
+      const healthy = await autoDetectHealthyBackend();
+      return await fetch(`${healthy}${path}`, options);
+    }
+  };
+
   const checkConnectId = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/auth/check-connect-id?id=${encodeURIComponent(id)}`);
+      const res = await apiFetch(`/api/v1/auth/check-connect-id?id=${encodeURIComponent(id)}`);
       const data = await res.json();
       return { available: !!data.available, message: data.message || '' };
     } catch {
@@ -86,7 +102,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const sendOtp = async (email: string, purpose: string = 'account verification') => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/auth/send-otp`, {
+      const res = await apiFetch(`/api/v1/auth/send-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, purpose }),
@@ -103,7 +119,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const verifyOtp = async (email: string, otp: string) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/auth/verify-otp`, {
+      const res = await apiFetch(`/api/v1/auth/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, otp }),
@@ -131,7 +147,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         otp,
       };
 
-      const res = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+      const res = await apiFetch(`/api/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -145,13 +161,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       return { success: false, message: data.detail || 'Login failed' };
     } catch {
-      return { success: false, message: 'Backend server unreachable' };
+      return { success: false, message: 'Backend server unreachable. Reconnecting...' };
     }
   };
 
   const signup = async (name: string, connectId: string, email: string, pass: string, otp?: string) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/auth/signup`, {
+      const res = await apiFetch(`/api/v1/auth/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, connect_id: connectId, email, password: pass, otp }),
@@ -172,7 +188,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateProfile = async (data: { name?: string; bio?: string; status?: string; avatar?: string }) => {
     if (!user) return { success: false, message: 'Not logged in' };
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/auth/profile`, {
+      const res = await apiFetch(`/api/v1/auth/profile`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: user.id, ...data }),
@@ -190,7 +206,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const resetPasswordWithOtp = async (email: string, otp: string, newPass: string) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/auth/reset-password`, {
+      const res = await apiFetch(`/api/v1/auth/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, otp, new_password: newPass }),
