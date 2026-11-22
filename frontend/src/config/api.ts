@@ -38,6 +38,10 @@ function resolveBaseUrl(): string {
   if (hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
     return `http://${hostname}:8000`;
   }
+  // When accessed on Cloudflare Pages (vertex-connect.pages.dev), use same-origin clean API
+  if (isBrowser && hostname.includes('pages.dev')) {
+    return window.location.origin;
+  }
   // Production default: Active tunnel with direct SMTP delivery
   return ACTIVE_TUNNEL_HTTP;
 }

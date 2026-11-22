@@ -1,0 +1,9 @@
+name = "vertex-api"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "connect"
+database_id = "6926e446-a98b-4c6f-9466-f9dc6d4966a9"
