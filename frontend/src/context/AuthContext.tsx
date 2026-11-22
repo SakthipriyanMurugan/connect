@@ -8,7 +8,7 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   checkConnectId: (id: string) => Promise<{ available: boolean; message: string }>;
-  sendOtp: (email: string, purpose?: string) => Promise<{ success: boolean; message?: string; code?: string; debug_code?: string }>;
+  sendOtp: (email: string, purpose?: string) => Promise<{ success: boolean; message?: string }>;
   verifyOtp: (email: string, otp: string) => Promise<{ success: boolean; message?: string }>;
   login: (identifier: string, pass?: string, otp?: string) => Promise<{ success: boolean; message?: string }>;
   signup: (name: string, connectId: string, email: string, pass: string, otp?: string) => Promise<{ success: boolean; message?: string }>;
@@ -117,9 +117,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (res.ok) {
         return { 
           success: true, 
-          message: data.message,
-          code: data.debug_code || data.code,
-          debug_code: data.debug_code || data.code
+          message: data.message
         };
       }
       return { success: false, message: data.detail || 'Failed to send OTP' };

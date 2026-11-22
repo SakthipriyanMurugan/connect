@@ -17,19 +17,28 @@ def _send_email_sync(to_email: str, subject: str, html_content: str) -> bool:
         part = MIMEText(html_content, "html")
         msg.attach(part)
 
-        # High-Speed Port 465 (Direct SSL) or Port 587 (STARTTLS)
-        if settings.SMTP_PORT == 465:
-            with smtplib.SMTP_SSL(settings.SMTP_SERVER, 465, timeout=10) as server:
+        # 1. Try Port 465 (Direct SSL)
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=6) as server:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
                 server.sendmail(settings.FROM_EMAIL, to_email, msg.as_string())
-        else:
-            with smtplib.SMTP(settings.SMTP_SERVER, settings.SMTP_PORT, timeout=10) as server:
+            logger.info(f"OTP email sent successfully via Port 465 to {to_email}")
+            return True
+        except Exception as e465:
+            logger.warning(f"Port 465 notice: {e465}. Attempting Port 587 (STARTTLS)...")
+
+        # 2. Try Port 587 (STARTTLS)
+        try:
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=6) as server:
                 server.starttls()
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
                 server.sendmail(settings.FROM_EMAIL, to_email, msg.as_string())
-        
-        logger.info(f"OTP email sent successfully to {to_email}")
-        return True
+            logger.info(f"OTP email sent successfully via Port 587 to {to_email}")
+            return True
+        except Exception as e587:
+            logger.error(f"Port 587 also failed: {e587}")
+
+        return False
     except Exception as e:
         logger.error(f"Failed to send email to {to_email}: {e}")
         return False

@@ -76,13 +76,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
     setLoading(false);
 
     if (res.success) {
-      const code = res.debug_code || res.code || '123456';
-      setOtp(code);
+      setOtp('');
       setOtpPurpose(purpose);
       setMode('verify_otp');
       setResendCountdown(60);
       setNotice({ 
-        msg: `Security code: ${code} (Auto-filled below!)` 
+        msg: `Verification code sent to ${targetEmail}! Please check your Inbox and Spam folder.` 
       });
       return true;
     } else {
@@ -367,21 +366,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                     </span>
                     <h2 className="text-xl font-bold tracking-tight text-white mt-0.5">Enter 6-digit Code</h2>
                     <p className="text-xs text-[#a3abd0] leading-relaxed">
-                      Verification code for <strong className="text-white">{email}</strong>
+                      We sent a secure 6-digit verification code to <strong className="text-white">{email}</strong>. Please check your Inbox and Spam folder.
                     </p>
                   </div>
-
-                  {otp && (
-                    <div className="p-3 rounded-xl bg-gradient-to-r from-[#8df0d4]/15 to-[#a69aff]/15 border border-[#8df0d4]/30 flex items-center justify-between animate-in fade-in">
-                      <div>
-                        <span className="text-[10px] uppercase font-bold text-[#8df0d4] tracking-wider block">Your 6-Digit Code</span>
-                        <span className="text-xl font-black text-white tracking-[6px] font-mono">{otp}</span>
-                      </div>
-                      <span className="text-[10px] font-bold text-[#8df0d4] bg-[#8df0d4]/20 border border-[#8df0d4]/30 px-2 py-1 rounded-md">
-                        ✓ Auto-Filled
-                      </span>
-                    </div>
-                  )}
 
                   <div>
                     <input

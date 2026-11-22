@@ -366,40 +366,38 @@ async def send_otp(req: SendOtpRequest):
     print(f"[SECURITY OTP] Code for {email_clean} ({req.purpose}): {otp_code}")
     print(f"========================================================\n")
     
-    # Ultra high-speed background dispatch via Gmail SMTP
-    async def bg_send():
-        try:
-            await send_otp_email(email_clean, otp_code, req.purpose)
-        except Exception as e:
-            print(f"[SMTP Error] Failed to send email to {email_clean}: {e}")
-
-    asyncio.create_task(bg_send())
+    # Send real email via dual-port SMTP (Port 465 / 587)
+    sent = await send_otp_email(email_clean, otp_code, req.purpose)
+    if not sent:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to dispatch email to {email_clean}. Please check the email address or try again in a few moments."
+        )
 
     return {
         "success": True,
-        "message": f"Verification code generated! (Code: {otp_code})",
-        "expires_in_minutes": 10,
-        "code": otp_code,
-        "debug_code": otp_code
+        "message": f"Verification code sent to {email_clean}. Please check your Inbox and Spam folder.",
+        "expires_in_minutes": 10
     }
 
-# 3. Verify OTP Endpoint
+# 3. Verify OTP Endpoint (Strict Security Verification)
 @app.post(f"{settings.API_V1_STR}/auth/verify-otp")
 def verify_otp(req: VerifyOtpRequest):
     email_clean = req.email.strip().lower()
     otp_input = req.otp.strip()
     record = otp_store.get(email_clean)
 
-    is_valid = False
-    if otp_input == "123456":
-        is_valid = True
-    elif record and record["code"].strip() == otp_input:
-        if datetime.utcnow() <= record["expires_at"]:
-            is_valid = True
-            del otp_store[email_clean]
+    if not record:
+        raise HTTPException(status_code=400, detail="No verification code was requested for this email or it has expired.")
 
-    if not is_valid:
+    if datetime.utcnow() > record["expires_at"]:
+        del otp_store[email_clean]
+        raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new code.")
+
+    if record["code"].strip() != otp_input:
         raise HTTPException(status_code=400, detail="Invalid verification code. Please check and try again.")
+    
+    del otp_store[email_clean]
     
     return {
         "success": True,
@@ -486,16 +484,12 @@ async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
     if req.otp:
         otp_input = req.otp.strip()
         record = otp_store.get(email_clean)
-        is_otp_valid = False
-        if otp_input == "123456":
-            is_otp_valid = True
-        elif record and record["code"].strip() == otp_input:
-            if datetime.utcnow() <= record["expires_at"]:
-                is_otp_valid = True
-                del otp_store[email_clean]
-        
-        if not is_otp_valid:
-            raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+        if not record or record["code"].strip() != otp_input:
+            raise HTTPException(status_code=400, detail="Invalid verification code.")
+        if datetime.utcnow() > record["expires_at"]:
+            del otp_store[email_clean]
+            raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new code.")
+        del otp_store[email_clean]
 
     # Count users
     count_stmt = select(func.count(UserModel.id))
@@ -594,16 +588,12 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         lookup_email = user.email.lower() if user else raw_ident.lower()
         otp_input = req.otp.strip()
         record = otp_store.get(lookup_email)
-        is_otp_valid = False
-        if otp_input == "123456":
-            is_otp_valid = True
-        elif record and record["code"].strip() == otp_input:
-            if datetime.utcnow() <= record["expires_at"]:
-                is_otp_valid = True
-                del otp_store[lookup_email]
-        
-        if not is_otp_valid:
-            raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
+        if not record or record["code"].strip() != otp_input:
+            raise HTTPException(status_code=400, detail="Invalid verification code.")
+        if datetime.utcnow() > record["expires_at"]:
+            del otp_store[lookup_email]
+            raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new code.")
+        del otp_store[lookup_email]
         
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No account found with '{raw_ident}'. Please sign up.")
@@ -645,16 +635,12 @@ async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(g
     email_clean = req.email.strip().lower()
     otp_input = req.otp.strip()
     record = otp_store.get(email_clean)
-    is_otp_valid = False
-    if otp_input == "123456":
-        is_otp_valid = True
-    elif record and record["code"].strip() == otp_input:
-        if datetime.utcnow() <= record["expires_at"]:
-            is_otp_valid = True
-            del otp_store[email_clean]
-
-    if not is_otp_valid:
-        raise HTTPException(status_code=400, detail="Invalid or expired OTP code.")
+    if not record or record["code"].strip() != otp_input:
+        raise HTTPException(status_code=400, detail="Invalid verification code.")
+    if datetime.utcnow() > record["expires_at"]:
+        del otp_store[email_clean]
+        raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new code.")
+    del otp_store[email_clean]
 
     stmt = select(UserModel).where(func.lower(UserModel.email) == req.email.lower())
     res = await db.execute(stmt)
