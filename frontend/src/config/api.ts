@@ -3,14 +3,28 @@
 const isBrowser = typeof window !== 'undefined';
 const hostname = isBrowser ? window.location.hostname : 'localhost';
 
+// Clean up any stale temporary quick-tunnels from localStorage
+if (isBrowser) {
+  try {
+    const cached = window.localStorage.getItem('VERTEX_API_URL');
+    if (cached && (cached.includes('trycloudflare.com') || cached.includes('loca.lt'))) {
+      window.localStorage.removeItem('VERTEX_API_URL');
+      window.localStorage.removeItem('VERTEX_WS_URL');
+    }
+  } catch {}
+}
+
 // 1. 24/7 Permanent Cloud Backend (Render Cloud Web Service)
 export const RENDER_CLOUD_HTTP = 'https://vertex-connect-backend.onrender.com';
 export const RENDER_CLOUD_WS = 'wss://vertex-connect-backend.onrender.com';
 
 function resolveBaseUrl(): string {
   if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL as string;
-  if (isBrowser && window.localStorage.getItem('VERTEX_API_URL')) {
-    return window.localStorage.getItem('VERTEX_API_URL')!;
+  if (isBrowser) {
+    const cached = window.localStorage.getItem('VERTEX_API_URL');
+    if (cached && !cached.includes('trycloudflare.com') && !cached.includes('loca.lt')) {
+      return cached;
+    }
   }
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return 'http://localhost:8000';
@@ -24,8 +38,11 @@ function resolveBaseUrl(): string {
 
 function resolveWsUrl(): string {
   if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL as string;
-  if (isBrowser && window.localStorage.getItem('VERTEX_WS_URL')) {
-    return window.localStorage.getItem('VERTEX_WS_URL')!;
+  if (isBrowser) {
+    const cached = window.localStorage.getItem('VERTEX_WS_URL');
+    if (cached && !cached.includes('trycloudflare.com') && !cached.includes('loca.lt')) {
+      return cached;
+    }
   }
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return 'ws://localhost:8000';

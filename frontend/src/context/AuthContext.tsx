@@ -8,7 +8,7 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   checkConnectId: (id: string) => Promise<{ available: boolean; message: string }>;
-  sendOtp: (email: string, purpose?: string) => Promise<{ success: boolean; message?: string }>;
+  sendOtp: (email: string, purpose?: string) => Promise<{ success: boolean; message?: string; code?: string; debug_code?: string }>;
   verifyOtp: (email: string, otp: string) => Promise<{ success: boolean; message?: string }>;
   login: (identifier: string, pass?: string, otp?: string) => Promise<{ success: boolean; message?: string }>;
   signup: (name: string, connectId: string, email: string, pass: string, otp?: string) => Promise<{ success: boolean; message?: string }>;
@@ -80,9 +80,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const apiFetch = async (path: string, options: RequestInit = {}) => {
-    const base = localStorage.getItem('VERTEX_API_URL') || API_BASE_URL;
+    let base = localStorage.getItem('VERTEX_API_URL') || API_BASE_URL;
+    if (base.includes('trycloudflare.com') || base.includes('loca.lt')) {
+      localStorage.removeItem('VERTEX_API_URL');
+      base = API_BASE_URL;
+    }
     try {
-      return await fetch(`${base}${path}`, options);
+      const res = await fetch(`${base}${path}`, options);
+      if (res.status === 502 || res.status === 503) throw new Error('Bad gateway');
+      return res;
     } catch {
       // Primary failed; failover to healthy backend
       const healthy = await autoDetectHealthyBackend();
@@ -109,7 +115,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       const data = await res.json();
       if (res.ok) {
-        return { success: true, message: data.message };
+        return { 
+          success: true, 
+          message: data.message,
+          code: data.debug_code || data.code,
+          debug_code: data.debug_code || data.code
+        };
       }
       return { success: false, message: data.detail || 'Failed to send OTP' };
     } catch {
