@@ -7,11 +7,8 @@ const hostname = isBrowser ? window.location.hostname : 'localhost';
 if (isBrowser) {
   try {
     const cached = window.localStorage.getItem('VERTEX_API_URL');
-    if (cached && (cached.includes('trycloudflare.com') || cached.includes('loca.lt') || cached.includes('onrender.com'))) {
-      if (!cached.includes('labour-cannon-adequate-supplemental')) {
-        window.localStorage.removeItem('VERTEX_API_URL');
-        window.localStorage.removeItem('VERTEX_WS_URL');
-      }
+    if (cached && (cached.includes('trycloudflare.com') || window.location.hostname.includes('pages.dev'))) {
+      window.localStorage.removeItem('VERTEX_API_URL');
     }
   } catch {}
 }
@@ -26,9 +23,13 @@ export const RENDER_CLOUD_WS = 'wss://vertex-connect-backend.onrender.com';
 
 function resolveBaseUrl(): string {
   if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL as string;
+  // When accessed on Cloudflare Pages (vertex-connect.pages.dev), ALWAYS use same-origin clean API
+  if (isBrowser && hostname.includes('pages.dev')) {
+    return window.location.origin;
+  }
   if (isBrowser) {
     const cached = window.localStorage.getItem('VERTEX_API_URL');
-    if (cached && !cached.includes('roof-cotton')) {
+    if (cached && !cached.includes('roof-cotton') && !cached.includes('trycloudflare.com')) {
       return cached;
     }
   }
@@ -38,11 +39,6 @@ function resolveBaseUrl(): string {
   if (hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
     return `http://${hostname}:8000`;
   }
-  // When accessed on Cloudflare Pages (vertex-connect.pages.dev), use same-origin clean API
-  if (isBrowser && hostname.includes('pages.dev')) {
-    return window.location.origin;
-  }
-  // Production default: Active tunnel with direct SMTP delivery
   return ACTIVE_TUNNEL_HTTP;
 }
 
@@ -70,6 +66,10 @@ export const WS_BASE_URL: string = resolveWsUrl();
  * Auto-detect and failover between active endpoints if current one is down
  */
 export async function autoDetectHealthyBackend(): Promise<string> {
+  if (isBrowser && window.location.hostname.includes('pages.dev')) {
+    return window.location.origin;
+  }
+
   const candidates = [
     ACTIVE_TUNNEL_HTTP,
     'http://localhost:8000',

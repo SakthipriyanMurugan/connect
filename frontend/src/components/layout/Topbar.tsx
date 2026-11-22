@@ -95,16 +95,16 @@ export const Topbar: React.FC<TopbarProps> = ({
             onClick={() => setProfileOpen(!profileOpen)}
             className="flex items-center gap-2.5 p-1 rounded-xl hover:bg-white/40 dark:hover:bg-white/5 transition-all cursor-pointer text-left"
           >
-            <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#a6f5ff] via-[#aab5ff] to-[#edbaff] flex items-center justify-center font-bold text-xs text-[#26305f] shadow-md border-2 border-white dark:border-white/20">
+            <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#a6f5ff] via-[#aab5ff] to-[#edbaff] flex items-center justify-center font-bold text-xs text-[#26305f] shadow-md border-2 border-white dark:border-white/20 shrink-0">
               {getInitials(user?.name)}
             </div>
-            <div className="hidden sm:block">
-              <b className="text-xs font-bold text-[#182044] dark:text-[#eef1ff] block leading-tight">
-                {user?.name || 'Sakthi'}
+            <div className="flex flex-col text-left">
+              <b className="text-xs font-bold text-[#182044] dark:text-[#eef1ff] block leading-tight truncate max-w-[85px] sm:max-w-[150px]">
+                {user?.name || 'User'}
               </b>
-              <small className="text-[10px] text-[#6f7899] dark:text-[#9fa9ce] block capitalize">
-                {user?.role?.replace('_', ' ') || 'Supervisor'}
-              </small>
+              <span className="text-[10px] text-[var(--accent)] font-bold leading-tight truncate max-w-[85px] sm:max-w-[150px]">
+                @{user?.connect_id || 'connect'}
+              </span>
             </div>
           </button>
 
@@ -113,6 +113,7 @@ export const Topbar: React.FC<TopbarProps> = ({
             <div className="absolute right-0 mt-2 w-56 rounded-2xl glass-panel p-2 shadow-xl z-30 border border-white/40 dark:border-white/10">
               <div className="px-3 py-2 border-b border-black/5 dark:border-white/10">
                 <div className="text-xs font-bold text-[#182044] dark:text-[#eef1ff]">{user?.name}</div>
+                <div className="text-[11px] font-bold text-[var(--accent)]">@{user?.connect_id}</div>
                 <div className="text-[11px] text-[#6f7899] dark:text-[#9fa9ce] truncate">{user?.email}</div>
                 <span className="inline-block mt-1 text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-[#e3eaff] dark:bg-[#8798ff]/20 text-[#5c6ed1] dark:text-[#cbd4ff]">
                   {user?.role?.replace('_', ' ')}

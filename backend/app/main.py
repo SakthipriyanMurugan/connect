@@ -99,17 +99,27 @@ class ConnectionManager:
         self.presence: Dict[str, dict] = {}
 
     async def connect(self, user_id: str, websocket: WebSocket) -> bool:
-        # Enforce multi-device session limit: maximum 3 concurrent devices per account
+        # Prune disconnected sockets first
+        if user_id in self.active_users:
+            dead = set()
+            for s in self.active_users[user_id]:
+                try:
+                    if getattr(s, "client_state", None) and s.client_state.name == "DISCONNECTED":
+                        dead.add(s)
+                except Exception:
+                    dead.add(s)
+            for d in dead:
+                self.active_users[user_id].discard(d)
+
+        # Generous session support (up to 10 tabs/devices). If exceeding, cleanly evict the oldest socket
         current_sockets = self.active_users.get(user_id, set())
-        if len(current_sockets) >= 3:
-            print(f"[WS Device Limit] User {user_id} attempted 4th device connection. Maximum 3 devices allowed.")
-            await websocket.accept()
-            await websocket.send_json({
-                "type": "device_limit_exceeded",
-                "message": "Maximum 3 devices connected to this account. Please disconnect another device to connect here."
-            })
-            await websocket.close(code=4003, reason="Maximum 3 devices allowed per account")
-            return False
+        if len(current_sockets) >= 10:
+            try:
+                oldest = next(iter(current_sockets))
+                await oldest.close(code=1000, reason="Replaced by newer session")
+                current_sockets.discard(oldest)
+            except Exception:
+                pass
 
         await websocket.accept()
         if user_id not in self.active_users:

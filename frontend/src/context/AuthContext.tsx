@@ -80,6 +80,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const apiFetch = async (path: string, options: RequestInit = {}) => {
+    // When on Cloudflare Pages, ALWAYS use same-origin clean API with safe timeout
+    if (typeof window !== 'undefined' && window.location.hostname.includes('pages.dev')) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      try {
+        const res = await fetch(`${window.location.origin}${path}`, {
+          ...options,
+          signal: options.signal || controller.signal,
+        });
+        clearTimeout(timer);
+        return res;
+      } catch (e) {
+        clearTimeout(timer);
+        throw e;
+      }
+    }
+
     let base = localStorage.getItem('VERTEX_API_URL') || API_BASE_URL;
     if (base.includes('trycloudflare.com') || base.includes('loca.lt') || base.includes('onrender.com')) {
       if (!base.includes('labour-cannon-adequate-supplemental')) {

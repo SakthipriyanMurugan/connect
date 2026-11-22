@@ -57,15 +57,15 @@ class CloudflareD1Client:
             self._cache_users_by_email[str(u["email"]).strip().lower()] = u
 
     def _get_token(self, force_refresh: bool = False) -> str:
-        if not force_refresh and self._cached_token:
-            return self._cached_token
-
-        # If refresh requested or first time, try to refresh wrangler token via CLI
         if force_refresh:
+            self._cached_token = None
             try:
-                subprocess.run(["npx", "wrangler", "d1", "list"], capture_output=True, timeout=25, shell=True)
+                subprocess.run(["npx", "wrangler", "whoami"], capture_output=True, timeout=25, shell=True)
             except Exception as e:
                 logger.warning(f"Auto-refresh wrangler token notice: {e}")
+
+        if not force_refresh and self._cached_token:
+            return self._cached_token
 
         # Check default.toml first for latest active OAuth token
         candidates = [
