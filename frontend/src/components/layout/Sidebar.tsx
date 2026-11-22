@@ -34,7 +34,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
   ];
 
   return (
-    <aside className="w-[250px] shrink-0 min-h-screen bg-gradient-to-b from-[#111638]/95 via-[#1a2455]/90 to-[#25245c]/90 text-[#dbe8ff] p-5 flex flex-col gap-5 border-r border-white/20 shadow-2xl backdrop-blur-2xl z-20">
+    <aside className="hidden md:flex w-[250px] shrink-0 min-h-screen bg-gradient-to-b from-[#111638]/95 via-[#1a2455]/90 to-[#25245c]/90 text-[#dbe8ff] p-5 flex flex-col gap-5 border-r border-white/20 shadow-2xl backdrop-blur-2xl z-20">
       {/* Brand */}
       <div className="flex items-center gap-3 px-2 pt-1 pb-2">
         <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#8ff5ff] via-[#8298ff] to-[#d6a0ff] flex items-center justify-center text-[#171d4c] text-2xl font-black shadow-lg shadow-[#8b9bff]/40">
@@ -104,5 +104,44 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
         </div>
       </div>
     </aside>
+  );
+};
+
+export const MobileBottomNav: React.FC<SidebarProps> = ({ currentPage, onPageChange, unreadCount = 0 }) => {
+  const mobileNavItems = [
+    { id: 'messages' as NavPage, label: 'Chats', icon: MessageSquare, badge: unreadCount > 0 ? unreadCount : undefined },
+    { id: 'meetings' as NavPage, label: 'Calls', icon: Video },
+    { id: 'intelligence' as NavPage, label: 'AI', icon: Sparkles },
+    { id: 'teams' as NavPage, label: 'Teams', icon: Users },
+    { id: 'settings' as NavPage, label: 'Settings', icon: Settings },
+  ];
+
+  return (
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#111638]/95 border-t border-white/20 backdrop-blur-2xl flex items-center justify-around px-2 py-1.5 shadow-2xl">
+      {mobileNavItems.map((item) => {
+        const Icon = item.icon;
+        const isActive = currentPage === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onPageChange(item.id)}
+            className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all relative cursor-pointer ${
+              isActive
+                ? 'text-[#8ff5ff] scale-105'
+                : 'text-[#9cb2d6] hover:text-white'
+            }`}
+          >
+            <div className={`p-1 rounded-xl ${isActive ? 'bg-[var(--accent)]/20' : ''}`}>
+              <Icon className="w-5 h-5" />
+            </div>
+            <span className="text-[10px] font-bold tracking-tight">{item.label}</span>
+            {item.badge ? (
+              <span className="absolute top-1 right-2.5 w-2 h-2 rounded-full bg-[#f04454] ring-2 ring-[#111638]" />
+            ) : null}
+          </button>
+        );
+      })}
+    </nav>
   );
 };

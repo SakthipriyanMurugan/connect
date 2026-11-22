@@ -27,7 +27,8 @@ import {
   StopCircle,
   Flame,
   ThumbsUp,
-  Heart
+  Heart,
+  ArrowLeft
 } from 'lucide-react';
 import type { ChatMessage, ConnectionUser, SearchUserResult } from '../../types';
 import { VoiceNotePlayer } from '../chat/VoiceNotePlayer';
@@ -666,7 +667,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   };
 
   return (
-    <div className="glass-panel h-[calc(100vh-140px)] flex overflow-hidden border border-white/60 dark:border-white/10 shadow-2xl animate-in fade-in duration-300">
+    <div className="glass-panel h-[calc(100dvh-130px)] md:h-[calc(100vh-140px)] flex overflow-hidden border border-white/60 dark:border-white/10 shadow-2xl animate-in fade-in duration-300">
       {/* Hidden File Input */}
       <input
         type="file"
@@ -676,7 +677,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       />
 
       {/* LEFT SIDEBAR: Search by Connect ID + Friends List + Requests */}
-      <div className="w-80 shrink-0 border-r border-black/5 dark:border-white/10 flex flex-col bg-white/40 dark:bg-white/5">
+      <div className={`w-full md:w-80 shrink-0 border-r border-black/5 dark:border-white/10 flex flex-col bg-white/40 dark:bg-white/5 ${activeFriend ? 'hidden md:flex' : 'flex'}`}>
         {/* Search by Connect ID Bar */}
         <div className="p-4 border-b border-black/5 dark:border-white/10 space-y-3">
           <div className="flex items-center justify-between">
@@ -940,25 +941,35 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       {activeFriend ? (
         <div className="flex-1 flex flex-col bg-white/20 dark:bg-white/5">
           {/* Header with Friend details, Call buttons */}
-          <div className="h-16 px-6 border-b border-black/5 dark:border-white/10 flex items-center justify-between bg-white/40 dark:bg-white/5">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#8cf4ff] via-[#8d8cff] to-[#d6a2ff] flex items-center justify-center font-bold text-xs text-[#171a42]">
+          <div className="h-16 px-3 md:px-6 border-b border-black/5 dark:border-white/10 flex items-center justify-between bg-white/40 dark:bg-white/5">
+            <div className="flex items-center gap-2 md:gap-3 min-w-0">
+              {/* Mobile Back Button to return to Chats List */}
+              <button
+                type="button"
+                onClick={() => setActiveFriend(null)}
+                className="md:hidden p-2 -ml-1 rounded-xl text-[#40516c] dark:text-[#cbd4ff] hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer"
+                title="Back to chats"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+
+              <div className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-gradient-to-tr from-[#8cf4ff] via-[#8d8cff] to-[#d6a2ff] flex items-center justify-center font-bold text-xs text-[#171a42] shrink-0">
                 {activeFriend.name.slice(0, 2).toUpperCase()}
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <b className="text-sm font-bold text-[#182044] dark:text-[#f1f3ff] leading-tight">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 md:gap-2 truncate">
+                  <b className="text-xs md:text-sm font-bold text-[#182044] dark:text-[#f1f3ff] leading-tight truncate">
                     {activeFriend.name}
                   </b>
-                  <span className="text-[10px] font-semibold text-[var(--accent)] bg-[var(--accent)]/10 px-1.5 py-0.2 rounded">
+                  <span className="text-[9px] md:text-[10px] font-semibold text-[var(--accent)] bg-[var(--accent)]/10 px-1.5 py-0.2 rounded shrink-0">
                     @{activeFriend.connect_id}
                   </span>
                 </div>
-                <small className="text-[11px] text-[#6f7899] dark:text-[#aeb8dc] flex items-center gap-1">
+                <small className="text-[10px] md:text-[11px] text-[#6f7899] dark:text-[#aeb8dc] flex items-center gap-1 truncate">
                   {isTyping ? (
                     <span className="text-[var(--accent)] font-bold animate-pulse">typing…</span>
                   ) : (
-                    <span>{activeFriend.bio || 'Direct connection'}</span>
+                    <span className="truncate">{activeFriend.bio || 'Direct connection'}</span>
                   )}
                 </small>
               </div>
@@ -1278,8 +1289,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           </div>
         </div>
       ) : (
-        /* Empty Right Pane when no friend is selected */
-        <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-[#71809a]">
+        /* Empty Right Pane when no friend is selected (Laptop/Desktop only) */
+        <div className="hidden md:flex flex-1 flex-col items-center justify-center text-center p-8 text-[#71809a]">
           <div className="w-16 h-16 rounded-3xl bg-[var(--accent)]/10 text-[var(--accent)] flex items-center justify-center mb-3">
             <MessageSquare className="w-8 h-8" />
           </div>

@@ -41,25 +41,32 @@ export const Topbar: React.FC<TopbarProps> = ({
   };
 
   return (
-    <header className="h-[74px] sticky top-0 z-10 px-8 flex items-center justify-between gap-6 border-b border-white/60 bg-white/70 dark:bg-[#111735]/70 backdrop-blur-xl shadow-sm transition-colors">
+    <header className="h-16 md:h-[74px] sticky top-0 z-10 px-3 md:px-8 flex items-center justify-between gap-2.5 md:gap-6 border-b border-white/60 bg-white/70 dark:bg-[#111735]/70 backdrop-blur-xl shadow-sm transition-colors">
+      {/* Mobile Brand Logo */}
+      <div className="md:hidden flex items-center gap-2 shrink-0">
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-[#8ff5ff] via-[#8298ff] to-[#d6a0ff] flex items-center justify-center text-[#171d4c] text-base font-black shadow-md">
+          V
+        </div>
+      </div>
+
       {/* Global Search */}
       <div className="relative flex-1 max-w-[620px]">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#71809a] dark:text-[#8898b3]" />
+        <Search className="absolute left-3 md:left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#71809a] dark:text-[#8898b3]" />
         <input
           ref={searchInputRef}
           type="text"
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
-          placeholder="Search people, messages, or meetings... (Ctrl + K)"
-          className="w-full pl-11 pr-14 py-2.5 rounded-xl border border-[#cbd5ff]/60 dark:border-white/10 bg-white/80 dark:bg-white/5 text-xs text-[#182044] dark:text-[#eef1ff] placeholder-[#71809a] dark:placeholder-[#8898b3] focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20 shadow-inner transition-all"
+          placeholder="Search... (Ctrl + K)"
+          className="w-full pl-9 md:pl-11 pr-8 md:pr-14 py-2 md:py-2.5 rounded-xl border border-[#cbd5ff]/60 dark:border-white/10 bg-white/80 dark:bg-white/5 text-xs text-[#182044] dark:text-[#eef1ff] placeholder-[#71809a] dark:placeholder-[#8898b3] focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20 shadow-inner transition-all"
         />
-        <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-[#8b98b0] bg-[#eef2fc] dark:bg-white/10 px-1.5 py-0.5 rounded border border-black/5 dark:border-white/10">
+        <span className="hidden md:inline-block absolute right-3.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-[#8b98b0] bg-[#eef2fc] dark:bg-white/10 px-1.5 py-0.5 rounded border border-black/5 dark:border-white/10">
           ⌘K
         </span>
       </div>
 
       {/* Top Actions */}
-      <div className="flex items-center gap-3 ml-auto">
+      <div className="flex items-center gap-1.5 md:gap-3 ml-auto shrink-0">
         {/* Appearance Customizer Trigger */}
         <button
           type="button"

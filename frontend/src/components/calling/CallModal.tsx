@@ -387,10 +387,10 @@ export const CallModal: React.FC<CallModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-6 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200">
       <audio ref={remoteAudioRef} autoPlay />
 
-      <div className="relative w-full max-w-5xl h-[85vh] max-h-[820px] rounded-3xl bg-[#0e1333]/95 border border-white/20 text-white shadow-2xl flex flex-col overflow-hidden backdrop-blur-2xl">
+      <div className="relative w-full max-w-5xl h-full sm:h-[85vh] sm:max-h-[820px] rounded-none sm:rounded-3xl bg-[#0e1333]/95 border-0 sm:border border-white/20 text-white shadow-2xl flex flex-col overflow-hidden backdrop-blur-2xl">
         {/* Top Header Bar */}
         <div className="h-16 px-6 border-b border-white/10 flex items-center justify-between bg-white/5">
           <div className="flex items-center gap-3">
@@ -571,12 +571,12 @@ export const CallModal: React.FC<CallModalProps> = ({
             {isVideoOn ? <VideoIcon className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
           </button>
 
-          {/* Screen Share */}
+          {/* Screen Share (Laptop / Desktop only) */}
           <button
             type="button"
             onClick={handleToggleScreenShare}
             title={isScreenSharing ? 'Stop sharing screen' : 'Share screen'}
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-lg active:scale-95 ${
+            className={`hidden sm:flex w-12 h-12 rounded-full items-center justify-center transition-all cursor-pointer shadow-lg active:scale-95 ${
               isScreenSharing ? 'bg-[#7a7cff] text-white ring-4 ring-[#7a7cff]/30' : 'bg-[#293556] hover:bg-[#394975] text-white'
             }`}
           >

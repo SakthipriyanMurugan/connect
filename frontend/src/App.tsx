@@ -3,7 +3,7 @@ import { PhoneOff } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppearanceProvider } from './context/AppearanceContext';
 import { AuthPage } from './components/auth/AuthPage';
-import { Sidebar, NavPage } from './components/layout/Sidebar';
+import { Sidebar, MobileBottomNav, NavPage } from './components/layout/Sidebar';
 import { Topbar } from './components/layout/Topbar';
 import { CustomizerDrawer } from './components/layout/CustomizerDrawer';
 import { CallBar } from './components/calling/CallBar';
@@ -376,14 +376,14 @@ const MainLayout: React.FC = () => {
       />
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 pb-16 md:pb-0">
         <Topbar
           searchQuery={searchQuery}
           onSearchChange={(q) => setSearchQuery(q)}
           onShowNotificationToast={showToast}
         />
 
-        <main className="flex-1 p-6 sm:p-8 max-w-[1600px] w-full mx-auto">
+        <main className="flex-1 p-2 sm:p-5 md:p-8 max-w-[1600px] w-full mx-auto">
           {currentPage === 'messages' && (
             <MessagesPage
               onStartCall={(name, callType, targetUserId, targetConnectId) =>
@@ -407,6 +407,12 @@ const MainLayout: React.FC = () => {
           {currentPage === 'settings' && <SettingsPage onShowToast={showToast} />}
         </main>
       </div>
+
+      {/* Mobile Bottom Navigation Bar (WhatsApp/Telegram style) */}
+      <MobileBottomNav
+        currentPage={currentPage}
+        onPageChange={(page) => setCurrentPage(page)}
+      />
 
       {/* Slide-out Customizer Drawer */}
       <CustomizerDrawer />
