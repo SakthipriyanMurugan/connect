@@ -24,7 +24,15 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
 }) => {
   useEffect(() => {
     playRingtone();
+
+    // 35-Second Auto Missed-Call Timeout
+    const autoTimeout = setTimeout(() => {
+      stopRingtone();
+      onDecline();
+    }, 35000);
+
     return () => {
+      clearTimeout(autoTimeout);
       stopRingtone();
     };
   }, []);

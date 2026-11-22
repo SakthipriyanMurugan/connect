@@ -20,9 +20,11 @@ import {
   ShieldCheck,
   Sparkles,
   Link2,
-  Copy
+  Copy,
+  PhoneCall,
+  Radio
 } from 'lucide-react';
-import { fetchLiveKitToken } from '../../services/livekit';
+import { fetchLiveKitToken, playOutgoingRingtone, stopOutgoingRingtone } from '../../services/livekit';
 
 export interface ActiveCallSession {
   roomName: string;
@@ -64,12 +66,47 @@ export const CallModal: React.FC<CallModalProps> = ({
   const [remoteName, setRemoteName] = useState<string>('');
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
   const [hasScreenShare, setHasScreenShare] = useState(false);
+  const [isRinging, setIsRinging] = useState<boolean>(!session.isIncoming && !!session.targetUserId);
+  const [timeoutCountdown, setTimeoutCountdown] = useState<number>(35);
 
   // Video Element Refs
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const screenShareRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const timeoutRef = useRef<any>(null);
+
+  // Outgoing Call Ringtone & Auto-Timeout (35 seconds)
+  useEffect(() => {
+    if (!session.isIncoming && session.targetUserId && participantCount < 2) {
+      playOutgoingRingtone();
+      setIsRinging(true);
+
+      const countdownInterval = setInterval(() => {
+        setTimeoutCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(countdownInterval);
+            stopOutgoingRingtone();
+            setIsRinging(false);
+            onShowToast('Teammate did not answer. Call timed out (Missed Call).');
+            handleHangup();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      timeoutRef.current = countdownInterval;
+
+      return () => {
+        clearInterval(countdownInterval);
+        stopOutgoingRingtone();
+      };
+    } else {
+      stopOutgoingRingtone();
+      setIsRinging(false);
+    }
+  }, [participantCount, session.targetUserId]);
 
   // Timer
   useEffect(() => {
@@ -236,6 +273,8 @@ export const CallModal: React.FC<CallModalProps> = ({
   };
 
   const handleHangup = () => {
+    stopOutgoingRingtone();
+    if (timeoutRef.current) clearInterval(timeoutRef.current);
     if (room) {
       room.disconnect();
     }
@@ -268,8 +307,20 @@ export const CallModal: React.FC<CallModalProps> = ({
                 </span>
               </h3>
               <p className="text-[11px] text-[#b6c5dd] flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-[#12a878] animate-pulse" />
-                {isConnecting ? 'Connecting to LiveKit cloud…' : `Connected · ${formatTime(seconds)}`}
+                {isRinging ? (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-[#8cf4ff] animate-ping" />
+                    <span className="text-[#8cf4ff] font-semibold flex items-center gap-1.5">
+                      <Radio className="w-3 h-3 animate-pulse" />
+                      Ringing teammate ({timeoutCountdown}s)…
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-[#12a878] animate-pulse" />
+                    {isConnecting ? 'Connecting to LiveKit cloud…' : `Connected · ${formatTime(seconds)}`}
+                  </>
+                )}
               </p>
             </div>
           </div>
@@ -323,6 +374,31 @@ export const CallModal: React.FC<CallModalProps> = ({
               playsInline
               className="w-full h-full object-cover rounded-2xl"
             />
+          ) : isRinging ? (
+            // WhatsApp-Style Outgoing Ringing Screen
+            <div className="flex flex-col items-center justify-center text-center animate-in fade-in duration-300">
+              <div className="relative mb-6">
+                <div className="absolute -inset-8 rounded-full border-2 border-[#8cf4ff]/20 animate-ping opacity-60 pointer-events-none" />
+                <div className="absolute -inset-4 rounded-full border-2 border-[#8cf4ff]/40 animate-pulse pointer-events-none" />
+                <div className="relative w-32 h-32 rounded-full bg-gradient-to-tr from-[#8cf4ff] via-[#8d8cff] to-[#d6a2ff] flex items-center justify-center text-[#171a42] text-4xl font-black shadow-2xl">
+                  <span>{session.title.slice(0, 2).toUpperCase()}</span>
+                </div>
+              </div>
+
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#8cf4ff]/15 border border-[#8cf4ff]/30 text-[#8cf4ff] text-xs font-bold mb-2">
+                <PhoneCall className="w-3.5 h-3.5 animate-bounce" />
+                <span>RINGING…</span>
+              </div>
+              <h4 className="text-2xl font-black text-white mb-2 tracking-tight">
+                Calling {session.title}
+              </h4>
+              <p className="text-xs text-[#b6c5dd] max-w-xs mx-auto mb-1">
+                Waiting for teammate to answer. Dial tone ringing…
+              </p>
+              <p className="text-[11px] text-[#8491a5] font-mono">
+                Auto-disconnects in {timeoutCountdown}s if no answer
+              </p>
+            </div>
           ) : (
             // Audio-Only Waveform View or Waiting Screen
             <div className="flex flex-col items-center justify-center text-center">

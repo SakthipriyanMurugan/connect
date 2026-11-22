@@ -32,3 +32,6 @@ backend/uploads/*
 Thumbs.db
 .vscode/
 .idea/
+cloudflared.exe
+*.zip
+download_cf.py

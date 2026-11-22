@@ -762,6 +762,13 @@ async def list_connections(user_id: str = Query(...), db: AsyncSession = Depends
 # 11. Send Message (Text, Voice Audio Notes & File Attachments)
 @app.post(f"{settings.API_V1_STR}/messages/send")
 async def send_message(req: SendMessageModel, db: AsyncSession = Depends(get_db)):
+    is_receiver_online = bool(
+        req.receiver_id 
+        and req.receiver_id in manager.active_users 
+        and len(manager.active_users[req.receiver_id]) > 0
+    )
+    delivery_status = "delivered" if is_receiver_online else "sent"
+
     new_msg = MessageModel(
         conversation_id=req.conversation_id,
         sender_id=req.sender_id,
@@ -774,7 +781,8 @@ async def send_message(req: SendMessageModel, db: AsyncSession = Depends(get_db)
         file_type=req.file_type,
         reply_to_id=req.reply_to_id,
         reply_to_snippet=req.reply_to_snippet,
-        reactions={}
+        reactions={},
+        is_read=False
     )
     db.add(new_msg)
     await db.commit()
@@ -794,6 +802,8 @@ async def send_message(req: SendMessageModel, db: AsyncSession = Depends(get_db)
         "reply_to_id": new_msg.reply_to_id,
         "reply_to_snippet": new_msg.reply_to_snippet,
         "reactions": new_msg.reactions or {},
+        "is_read": False,
+        "status": delivery_status,
         "created_at": new_msg.created_at.isoformat()
     }
 
@@ -845,10 +855,43 @@ async def get_messages(conversation_id: str, db: AsyncSession = Depends(get_db))
             "reply_to_id": m.reply_to_id,
             "reply_to_snippet": m.reply_to_snippet,
             "reactions": m.reactions or {},
+            "is_read": bool(m.is_read),
+            "status": "delivered" if (m.receiver_id and m.receiver_id in manager.active_users and len(manager.active_users[m.receiver_id]) > 0) else "sent",
             "created_at": m.created_at.isoformat()
         }
         for m in msgs
     ]
+
+# 12a. Mark Messages as Read (WhatsApp Blue Ticks Sync)
+class MarkReadRequest(BaseModel):
+    conversation_id: str
+    reader_id: str
+
+@app.post(f"{settings.API_V1_STR}/messages/read")
+async def mark_messages_read(req: MarkReadRequest, db: AsyncSession = Depends(get_db)):
+    stmt = select(MessageModel).where(
+        and_(
+            MessageModel.conversation_id == req.conversation_id,
+            MessageModel.receiver_id == req.reader_id,
+            MessageModel.is_read == False
+        )
+    )
+    res = await db.execute(stmt)
+    unread_msgs = res.scalars().all()
+
+    if unread_msgs:
+        for m in unread_msgs:
+            m.is_read = True
+        await db.commit()
+
+    # Broadcast read receipt via WebSocket so sender gets immediate double blue ticks
+    await manager.broadcast({
+        "type": "messages_read",
+        "conversation_id": req.conversation_id,
+        "reader_id": req.reader_id
+    })
+
+    return {"success": True, "marked_count": len(unread_msgs)}
 
 # 12b. Add Emoji Reaction to a Message
 @app.post(f"{settings.API_V1_STR}/messages/react")
@@ -1053,8 +1096,19 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             elif msg_type == "call_invite":
                 target_user_id = data.get("target_user_id")
                 print(f"[WS Signaling] call_invite from {user_id} to {target_user_id}, room: {data.get('room_name')}")
-                await manager.set_user_status(user_id, "in_call")
-                if target_user_id:
+                is_target_online = bool(target_user_id and target_user_id in manager.active_users and len(manager.active_users[target_user_id]) > 0)
+                
+                if not is_target_online:
+                    await manager.set_user_status(user_id, "online")
+                    await manager.send_to_user(user_id, {
+                        "type": "call_failed",
+                        "reason": "offline",
+                        "target_user_id": target_user_id,
+                        "caller_name": data.get("caller_name", "Teammate"),
+                        "message": "Teammate is currently offline"
+                    })
+                else:
+                    await manager.set_user_status(user_id, "in_call")
                     await manager.send_to_user(target_user_id, {
                         "type": "incoming_call",
                         "caller_id": user_id,
@@ -1063,6 +1117,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "caller_avatar": data.get("caller_avatar", ""),
                         "room_name": data.get("room_name"),
                         "call_type": data.get("call_type", "video")
+                    })
+                    await manager.send_to_user(user_id, {
+                        "type": "call_ringing",
+                        "target_user_id": target_user_id,
+                        "room_name": data.get("room_name")
                     })
             elif msg_type == "call_response":
                 target_user_id = data.get("target_user_id")
@@ -1079,6 +1138,17 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "accepted": accepted,
                         "room_name": data.get("room_name")
                     })
+            elif msg_type == "call_timeout":
+                target_user_id = data.get("target_user_id")
+                print(f"[WS Signaling] call_timeout from {user_id} to {target_user_id}")
+                await manager.set_user_status(user_id, "online")
+                if target_user_id:
+                    await manager.set_user_status(target_user_id, "online")
+                    await manager.send_to_user(target_user_id, {
+                        "type": "call_timeout",
+                        "caller_id": user_id,
+                        "room_name": data.get("room_name")
+                    })
             elif msg_type == "call_ended":
                 target_user_id = data.get("target_user_id")
                 print(f"[WS Signaling] call_ended from {user_id} to {target_user_id}")
@@ -1089,6 +1159,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "type": "call_ended",
                         "user_id": user_id,
                         "room_name": data.get("room_name")
+                    })
+            elif msg_type == "read_messages":
+                conv_id = data.get("conversation_id")
+                if conv_id:
+                    await manager.broadcast({
+                        "type": "messages_read",
+                        "conversation_id": conv_id,
+                        "reader_id": user_id
                     })
     except WebSocketDisconnect:
         manager.disconnect(user_id, websocket)

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { PhoneOff } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppearanceProvider } from './context/AppearanceContext';
 import { AuthPage } from './components/auth/AuthPage';
@@ -11,6 +12,7 @@ import { IncomingCallModal, IncomingCallData } from './components/calling/Incomi
 import { MeetingIntelligenceModal } from './components/calling/MeetingIntelligenceModal';
 import type { MeetingIntelligenceReport } from './types';
 import { API_BASE_URL, WS_BASE_URL } from './config/api';
+import { stopOutgoingRingtone, stopRingtone } from './services/livekit';
 import { MessagesPage } from './components/pages/MessagesPage';
 import { MeetingsPage } from './components/pages/MeetingsPage';
 import { IntelligencePage } from './components/pages/IntelligencePage';
@@ -30,6 +32,11 @@ const MainLayout: React.FC = () => {
   const [isCallMinimized, setIsCallMinimized] = useState<boolean>(false);
   const [incomingCall, setIncomingCall] = useState<IncomingCallData | null>(null);
   const [intelligenceReport, setIntelligenceReport] = useState<MeetingIntelligenceReport | null>(null);
+  const [offlineCallModal, setOfflineCallModal] = useState<{
+    isOpen: boolean;
+    name: string;
+    connectId?: string;
+  }>({ isOpen: false, name: '' });
 
   // Global WebSocket for Call Signaling
   const wsRef = useRef<WebSocket | null>(null);
@@ -95,12 +102,37 @@ const MainLayout: React.FC = () => {
               }
             } else if (data.type === 'call_response') {
               if (!data.accepted) {
+                stopOutgoingRingtone();
                 showToast('Call was declined by teammate.');
                 setActiveCallSession(null);
               } else {
+                stopOutgoingRingtone();
                 showToast('Call accepted! Connecting LiveKit WebRTC stream…');
               }
+            } else if (data.type === 'call_failed') {
+              stopOutgoingRingtone();
+              stopRingtone();
+              setActiveCallSession(null);
+              setIsCallMinimized(false);
+              if (data.reason === 'offline') {
+                setOfflineCallModal({
+                  isOpen: true,
+                  name: data.caller_name || 'Teammate',
+                  connectId: data.target_connect_id || '',
+                });
+              } else {
+                showToast(data.message || 'Call failed');
+              }
+            } else if (data.type === 'call_timeout') {
+              stopOutgoingRingtone();
+              stopRingtone();
+              setIncomingCall(null);
+              setActiveCallSession(null);
+              setIsCallMinimized(false);
+              showToast('Call timed out (Missed Call)');
             } else if (data.type === 'call_ended') {
+              stopOutgoingRingtone();
+              stopRingtone();
               showToast('Call ended by participant.');
               setActiveCallSession(null);
               setIsCallMinimized(false);
@@ -138,12 +170,37 @@ const MainLayout: React.FC = () => {
         });
       } else if (data.type === 'call_response') {
         if (!data.accepted) {
+          stopOutgoingRingtone();
           showToast('Call was declined by teammate.');
           setActiveCallSession(null);
         } else {
+          stopOutgoingRingtone();
           showToast('Call accepted! Connecting LiveKit WebRTC stream…');
         }
+      } else if (data.type === 'call_failed') {
+        stopOutgoingRingtone();
+        stopRingtone();
+        setActiveCallSession(null);
+        setIsCallMinimized(false);
+        if (data.reason === 'offline') {
+          setOfflineCallModal({
+            isOpen: true,
+            name: data.caller_name || 'Teammate',
+            connectId: data.target_connect_id || '',
+          });
+        } else {
+          showToast(data.message || 'Call failed');
+        }
+      } else if (data.type === 'call_timeout') {
+        stopOutgoingRingtone();
+        stopRingtone();
+        setIncomingCall(null);
+        setActiveCallSession(null);
+        setIsCallMinimized(false);
+        showToast('Call timed out (Missed Call)');
       } else if (data.type === 'call_ended') {
+        stopOutgoingRingtone();
+        stopRingtone();
         showToast('Call ended by participant.');
         setActiveCallSession(null);
         setIsCallMinimized(false);
@@ -159,6 +216,8 @@ const MainLayout: React.FC = () => {
         ws.close();
         wsRef.current = null;
       }
+      stopOutgoingRingtone();
+      stopRingtone();
     };
   }, [user?.id]);
 
@@ -386,6 +445,43 @@ const MainLayout: React.FC = () => {
           onClose={() => setIntelligenceReport(null)}
           onShowToast={showToast}
         />
+      )}
+
+      {/* Offline Teammate Notification & Animation Modal */}
+      {offlineCallModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="relative w-full max-w-sm p-6 overflow-hidden text-center rounded-3xl bg-[#141b43]/95 border border-red-500/30 text-white shadow-2xl backdrop-blur-2xl">
+            {/* Red Pulsing Aura */}
+            <div className="absolute -top-12 left-1/2 -translate-x-1/2 w-48 h-48 bg-red-500/20 rounded-full blur-2xl pointer-events-none animate-pulse" />
+
+            {/* Offline Icon */}
+            <div className="relative mx-auto mb-4 w-20 h-20 rounded-full flex items-center justify-center bg-red-500/10 border-2 border-red-500/30 text-red-400 text-3xl shadow-xl">
+              <PhoneOff className="w-8 h-8 animate-bounce text-red-400" />
+            </div>
+
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-red-500/15 border border-red-500/30 text-red-400 text-xs font-bold mb-2">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+              USER OFFLINE
+            </span>
+
+            <h3 className="text-xl font-bold text-white mb-1 truncate">{offlineCallModal.name}</h3>
+            {offlineCallModal.connectId && (
+              <p className="text-xs font-semibold text-[#8cf4ff] mb-2">@{offlineCallModal.connectId}</p>
+            )}
+
+            <p className="text-xs text-[#b6c5dd] mb-6 leading-relaxed">
+              This teammate is not currently connected to the network. Your call could not be placed.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setOfflineCallModal({ isOpen: false, name: '' })}
+              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-500 hover:to-rose-600 text-white text-xs font-bold transition-all cursor-pointer shadow-lg active:scale-95"
+            >
+              OK, Got it
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Global Toast Alert */}

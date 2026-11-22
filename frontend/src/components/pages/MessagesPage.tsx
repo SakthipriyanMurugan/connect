@@ -158,7 +158,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             const data = JSON.parse(event.data);
             
             // Forward call signaling redundancy
-            if (['incoming_call', 'call_response', 'call_ended'].includes(data.type)) {
+            if (['incoming_call', 'call_response', 'call_ended', 'call_failed', 'call_ringing', 'call_timeout'].includes(data.type)) {
               window.dispatchEvent(new CustomEvent('vertex_call_signaling', { detail: data }));
               return;
             }
@@ -171,8 +171,25 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   if (prev.some((m) => m.id === newMsg.id)) return prev;
                   return [...prev, newMsg];
                 });
+
+                // Immediately send read receipt since conversation is active
+                if (user?.id) {
+                  fetch(`${API_BASE_URL}/api/v1/messages/read`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ conversation_id: newMsg.conversation_id, reader_id: user.id }),
+                  }).catch(() => {});
+                }
               }
               onShowToast(`New message from ${newMsg.sender_name}`);
+            } else if (data.type === 'messages_read') {
+              if (activeFriendRef.current?.conversation_id === data.conversation_id) {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.sender_id === user?.id ? { ...m, is_read: true } : m
+                  )
+                );
+              }
             } else if (data.type === 'message_reaction') {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -241,6 +258,18 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         if (res.ok) {
           const data: ChatMessage[] = await res.json();
           setMessages(data);
+
+          // Mark unread messages as read
+          if (user?.id) {
+            fetch(`${API_BASE_URL}/api/v1/messages/read`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                conversation_id: activeFriend.conversation_id,
+                reader_id: user.id,
+              }),
+            }).catch(() => {});
+          }
         }
       } catch (err) {
         console.error('Failed to load messages', err);
@@ -366,6 +395,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     const replySnippet = replyingTo ? `${replyingTo.sender_name}: ${replyingTo.content.slice(0, 60)}` : undefined;
     const replyId = replyingTo?.id;
 
+    const isReceiverOnline = activeFriend.status === 'online' || activeFriend.status === 'in_call';
     const optimisticMessage: ChatMessage = {
       id: tempId,
       conversation_id: activeFriend.conversation_id || '',
@@ -376,6 +406,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       reply_to_id: replyId,
       reply_to_snippet: replySnippet,
       reactions: {},
+      is_read: false,
+      status: isReceiverOnline ? 'delivered' : 'sent',
       created_at: new Date().toISOString(),
       is_me: true,
     };
@@ -1093,7 +1125,21 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
                     <div className="flex items-center gap-1 mt-1 text-[10px] text-[#8491a5] dark:text-[#8898b3] px-1">
                       <span>{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                      {isMe && <CheckCheck className="w-3.5 h-3.5 text-[#2463d9]" />}
+                      {isMe && (
+                        m.is_read ? (
+                          <span title="Read (Seen)">
+                            <CheckCheck className="w-3.5 h-3.5 text-[#2463d9]" />
+                          </span>
+                        ) : (activeFriend?.status === 'online' || activeFriend?.status === 'in_call' || m.status === 'delivered') ? (
+                          <span title="Delivered to device">
+                            <CheckCheck className="w-3.5 h-3.5 text-[#8491a5] dark:text-[#8898b3]" />
+                          </span>
+                        ) : (
+                          <span title="Sent (Receiver offline)">
+                            <Check className="w-3.5 h-3.5 text-[#8491a5] dark:text-[#8898b3]" />
+                          </span>
+                        )
+                      )}
                     </div>
                   </div>
                 );

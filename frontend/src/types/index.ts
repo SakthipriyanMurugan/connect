@@ -43,6 +43,8 @@ export interface ChatMessage {
   reply_to_id?: string;
   reply_to_snippet?: string;
   reactions?: Record<string, string[]>;
+  is_read?: boolean;
+  status?: 'sent' | 'delivered' | 'read';
   created_at: string;
   is_me?: boolean;
 }

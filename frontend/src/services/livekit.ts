@@ -36,45 +36,52 @@ export const fetchLiveKitToken = async (
 
 // Web Audio API Ringtone Synthesizer (0 external audio files needed)
 let ringtoneInterval: any = null;
+let outgoingToneInterval: any = null;
 let audioCtx: AudioContext | null = null;
 
+const getAudioContext = () => {
+  if (!audioCtx || audioCtx.state === 'closed') {
+    audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+  return audioCtx;
+};
+
+// 1. Incoming Call Ringtone
 export const playRingtone = () => {
   try {
-    if (!audioCtx) {
-      audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    }
-    if (audioCtx.state === 'suspended') {
-      audioCtx.resume();
-    }
+    const ctx = getAudioContext();
 
     const playBeep = () => {
-      if (!audioCtx) return;
-      const osc1 = audioCtx.createOscillator();
-      const osc2 = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
+      if (!ctx || ctx.state === 'closed') return;
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
 
       osc1.type = 'sine';
       osc2.type = 'sine';
-      osc1.frequency.setValueAtTime(440, audioCtx.currentTime); // A4
-      osc2.frequency.setValueAtTime(480, audioCtx.currentTime); // European dial tone harmony
+      osc1.frequency.setValueAtTime(440, ctx.currentTime);
+      osc2.frequency.setValueAtTime(480, ctx.currentTime);
 
-      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.2);
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
 
       osc1.connect(gain);
       osc2.connect(gain);
-      gain.connect(audioCtx.destination);
+      gain.connect(ctx.destination);
 
       osc1.start();
       osc2.start();
-      osc1.stop(audioCtx.currentTime + 1.2);
-      osc2.stop(audioCtx.currentTime + 1.2);
+      osc1.stop(ctx.currentTime + 1.2);
+      osc2.stop(ctx.currentTime + 1.2);
     };
 
     playBeep();
     ringtoneInterval = setInterval(playBeep, 2400);
   } catch (e) {
-    console.warn('AudioContext ringtone warning:', e);
+    console.warn('AudioContext incoming ringtone warning:', e);
   }
 };
 
@@ -83,10 +90,49 @@ export const stopRingtone = () => {
     clearInterval(ringtoneInterval);
     ringtoneInterval = null;
   }
-  if (audioCtx && audioCtx.state !== 'closed') {
-    try {
-      audioCtx.close();
-    } catch {}
-    audioCtx = null;
+};
+
+// 2. Outgoing WhatsApp-style Ringing Dialtone ("Tring... Tring...")
+export const playOutgoingRingtone = () => {
+  try {
+    stopOutgoingRingtone();
+    const ctx = getAudioContext();
+
+    const playDialTone = () => {
+      if (!ctx || ctx.state === 'closed') return;
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      // Soft WhatsApp dialtone harmonic frequencies
+      osc1.type = 'sine';
+      osc2.type = 'sine';
+      osc1.frequency.setValueAtTime(425, ctx.currentTime);
+      osc2.frequency.setValueAtTime(450, ctx.currentTime);
+
+      gain.gain.setValueAtTime(0.04, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.3);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc1.start();
+      osc2.start();
+      osc1.stop(ctx.currentTime + 1.3);
+      osc2.stop(ctx.currentTime + 1.3);
+    };
+
+    playDialTone();
+    outgoingToneInterval = setInterval(playDialTone, 3000);
+  } catch (e) {
+    console.warn('AudioContext outgoing ringtone warning:', e);
+  }
+};
+
+export const stopOutgoingRingtone = () => {
+  if (outgoingToneInterval) {
+    clearInterval(outgoingToneInterval);
+    outgoingToneInterval = null;
   }
 };
