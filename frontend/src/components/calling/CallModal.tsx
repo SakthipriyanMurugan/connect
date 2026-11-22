@@ -7,7 +7,8 @@ import {
   RemoteTrackPublication, 
   RemoteTrack,
   VideoPresets,
-  AudioPresets
+  AudioPresets,
+  ScreenSharePresets
 } from 'livekit-client';
 import { 
   Mic, 
@@ -165,7 +166,7 @@ export const CallModal: React.FC<CallModalProps> = ({
 
         if (isCancelled) return;
 
-        // 2. Instantiate LiveKit Room with Studio HD Audio (48kHz) and 2K/1080p Video Presets
+        // 2. Instantiate LiveKit Room with Studio Master HD Audio (128kbps, 48kHz) and 4K UHD / 2K QHD Video Presets
         const newRoom = new Room({
           adaptiveStream: true,
           dynacast: true,
@@ -177,17 +178,20 @@ export const CallModal: React.FC<CallModalProps> = ({
             sampleRate: 48000,
           },
           videoCaptureDefaults: {
-            resolution: VideoPresets.h1440.resolution, // 2560x1440 2K QHD
+            resolution: VideoPresets.h2160.resolution, // 3840x2160 4K UHD capture with auto-scale to native camera max
             facingMode: 'user',
           },
           publishDefaults: {
             videoSimulcastLayers: [
-              VideoPresets.h360,
+              VideoPresets.h540,
               VideoPresets.h720,
               VideoPresets.h1080,
               VideoPresets.h1440,
+              VideoPresets.h2160,
             ],
             audioPreset: AudioPresets.musicHighQualityStereo,
+            forceStereo: true,
+            screenShareEncoding: ScreenSharePresets.h1080fps30.encoding,
             red: true,
             dtx: false,
           },
@@ -285,7 +289,7 @@ export const CallModal: React.FC<CallModalProps> = ({
         if (session.callType === 'video') {
           try {
             await newRoom.localParticipant.setCameraEnabled(true, {
-              resolution: VideoPresets.h1440.resolution,
+              resolution: VideoPresets.h2160.resolution,
             });
             setIsVideoOn(true);
             const camTrack = newRoom.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
@@ -339,14 +343,14 @@ export const CallModal: React.FC<CallModalProps> = ({
     try {
       const nextVideo = !isVideoOn;
       await room.localParticipant.setCameraEnabled(nextVideo, {
-        resolution: VideoPresets.h1440.resolution,
+        resolution: VideoPresets.h2160.resolution,
       });
       setIsVideoOn(nextVideo);
       if (nextVideo) {
         const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
         if (camTrack && localVideoRef.current) camTrack.attach(localVideoRef.current);
       }
-      onShowToast(nextVideo ? 'Camera turned on (2K QHD)' : 'Camera turned off');
+      onShowToast(nextVideo ? 'Camera turned on (4K UHD / 2K)' : 'Camera turned off');
     } catch (e: any) {
       onShowToast(`Failed to toggle camera: ${e.message}`);
     }
@@ -472,7 +476,7 @@ export const CallModal: React.FC<CallModalProps> = ({
           {/* Quality Badge */}
           <div className="absolute top-6 right-6 z-10 flex items-center gap-2 px-3 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded-full text-[11px] font-semibold text-[#8cf4ff] shadow-lg">
             <Radio className="w-3 h-3 text-[#52fa9a] animate-pulse" />
-            <span>2K FHD • Studio 48kHz</span>
+            <span>⚡ 4K UHD / 2K • Studio Master 128k</span>
           </div>
 
           {/* Outgoing Ringing Screen or Audio Avatar Placeholder (Visible when no video or screen share) */}
