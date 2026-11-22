@@ -136,6 +136,8 @@ const MainLayout: React.FC = () => {
               showToast('Call ended by participant.');
               setActiveCallSession(null);
               setIsCallMinimized(false);
+            } else if (data.type === 'device_limit_exceeded') {
+              showToast('⚠️ Maximum 3 devices active for your account. Please disconnect another device.');
             }
           } catch (e) {
             console.warn('WS call signaling parse error:', e);
@@ -143,8 +145,13 @@ const MainLayout: React.FC = () => {
         };
 
         ws.onerror = (e) => console.warn('WebSocket signaling error:', e);
-        ws.onclose = () => {
+        ws.onclose = (event: CloseEvent) => {
           wsRef.current = null;
+          if (event.code === 4003) {
+            // Device limit exceeded policy code: do NOT spam auto-reconnect
+            showToast('⚠️ Device Limit Reached: Maximum 3 devices allowed simultaneously.');
+            return;
+          }
           // Auto reconnect after 3 seconds if user still logged in
           reconnectTimeout = setTimeout(connectWS, 3000);
         };

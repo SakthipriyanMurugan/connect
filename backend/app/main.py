@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, status, UploadFile, File, Query, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, status, UploadFile, File, Query, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr
@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 import random
 import os
 import re
+import uuid
+import json
 import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -96,7 +98,19 @@ class ConnectionManager:
         # Maps user_id -> {"status": "online" | "in_call" | "away" | "offline", "last_seen": ISO timestamp}
         self.presence: Dict[str, dict] = {}
 
-    async def connect(self, user_id: str, websocket: WebSocket):
+    async def connect(self, user_id: str, websocket: WebSocket) -> bool:
+        # Enforce multi-device session limit: maximum 3 concurrent devices per account
+        current_sockets = self.active_users.get(user_id, set())
+        if len(current_sockets) >= 3:
+            print(f"[WS Device Limit] User {user_id} attempted 4th device connection. Maximum 3 devices allowed.")
+            await websocket.accept()
+            await websocket.send_json({
+                "type": "device_limit_exceeded",
+                "message": "Maximum 3 devices connected to this account. Please disconnect another device to connect here."
+            })
+            await websocket.close(code=4003, reason="Maximum 3 devices allowed per account")
+            return False
+
         await websocket.accept()
         if user_id not in self.active_users:
             self.active_users[user_id] = set()
@@ -113,6 +127,7 @@ class ConnectionManager:
             "status": "online",
             "last_seen": self.presence[user_id]["last_seen"]
         })
+        return True
 
     def disconnect(self, user_id: str, websocket: Optional[WebSocket] = None):
         if user_id in self.active_users:
@@ -318,7 +333,6 @@ async def d1_status():
 async def check_connect_id(
     id: Optional[str] = Query(None),
     connect_id: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db)
 ):
     target = id or connect_id
     if not target:
@@ -332,10 +346,8 @@ async def check_connect_id(
             "message": "Connect ID can only contain letters, numbers, and underscores (3-30 chars)."
         }
     
-    stmt = select(UserModel).where(UserModel.connect_id == cleaned)
-    res = await db.execute(stmt)
-    existing = res.scalar_one_or_none()
-
+    # Query Cloudflare D1 Authoritative Primary Store
+    existing = await d1.get_user_by_connect_id(cleaned)
     if existing:
         return {
             "available": False,
@@ -349,17 +361,26 @@ async def check_connect_id(
         "message": f"@{cleaned} is available!"
     }
 
-# 2. Send OTP Endpoint
+# 2. Send OTP Endpoint (Cloudflare D1 & SMTP Dispatch)
 @app.post(f"{settings.API_V1_STR}/auth/send-otp")
-async def send_otp(req: SendOtpRequest):
+async def send_otp(req: SendOtpRequest, request: Request):
     email_clean = req.email.strip().lower()
     otp_code = f"{random.randint(100000, 999999)}"
     expires_at = datetime.utcnow() + timedelta(minutes=10)
+    client_ip = request.client.host if request.client else "web/mobile"
     
+    # In-memory fast cache
     otp_store[email_clean] = {
         "code": otp_code,
         "expires_at": expires_at
     }
+    
+    # Store directly in Cloudflare D1 otp_codes and log to auth_logs
+    try:
+        await d1.save_otp(email_clean, otp_code, req.purpose, 10)
+        await d1.log_auth_event(None, email_clean, None, f"otp_sent_{req.purpose}", "success", client_ip)
+    except Exception as e:
+        print(f"[Cloudflare D1] OTP save notice: {e}")
     
     # Prominently log OTP to server console
     print(f"\n========================================================")
@@ -380,24 +401,42 @@ async def send_otp(req: SendOtpRequest):
         "expires_in_minutes": 10
     }
 
-# 3. Verify OTP Endpoint (Strict Security Verification)
+# 3. Verify OTP Endpoint (Strict Security Verification with Cloudflare D1)
 @app.post(f"{settings.API_V1_STR}/auth/verify-otp")
-def verify_otp(req: VerifyOtpRequest):
+async def verify_otp(req: VerifyOtpRequest, request: Request):
     email_clean = req.email.strip().lower()
     otp_input = req.otp.strip()
+    client_ip = request.client.host if request.client else "web/mobile"
+
+    code_valid = False
     record = otp_store.get(email_clean)
 
-    if not record:
-        raise HTTPException(status_code=400, detail="No verification code was requested for this email or it has expired.")
-
-    if datetime.utcnow() > record["expires_at"]:
+    if record and datetime.utcnow() <= record["expires_at"] and record["code"].strip() == otp_input:
+        code_valid = True
         del otp_store[email_clean]
-        raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new code.")
 
-    if record["code"].strip() != otp_input:
-        raise HTTPException(status_code=400, detail="Invalid verification code. Please check and try again.")
-    
-    del otp_store[email_clean]
+    if not code_valid:
+        try:
+            d1_record = await d1.get_otp(email_clean)
+            if d1_record:
+                exp = datetime.fromisoformat(d1_record["expires_at"]) if d1_record.get("expires_at") else datetime.min
+                if datetime.utcnow() <= exp and d1_record.get("code", "").strip() == otp_input:
+                    code_valid = True
+        except Exception as e:
+            print(f"[Cloudflare D1] OTP verification check notice: {e}")
+
+    if not code_valid:
+        try:
+            await d1.log_auth_event(None, email_clean, None, "otp_verify_failed", "failed", client_ip)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code. Please check and try again.")
+
+    try:
+        await d1.delete_otp(email_clean)
+        await d1.log_auth_event(None, email_clean, None, "otp_verified", "success", client_ip)
+    except Exception as e:
+        print(f"[Cloudflare D1] OTP cleanup notice: {e}")
     
     return {
         "success": True,
@@ -405,195 +444,191 @@ def verify_otp(req: VerifyOtpRequest):
         "message": "Email verified successfully."
     }
 
-# 4. Signup with Connect ID & OTP (with Seamless Existing User Auto-Login)
+# 4. Signup with Connect ID & OTP (Cloudflare D1 Primary & Seamless Existing User Auto-Login)
 @app.post(f"{settings.API_V1_STR}/auth/signup", response_model=AuthResponse)
-async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
+async def signup(req: SignupRequest, request: Request, db: AsyncSession = Depends(get_db)):
     cleaned_id = clean_connect_id(req.connect_id)
     email_clean = req.email.strip().lower()
+    client_ip = request.client.host if request.client else "web/mobile"
     if not re.match(r"^[a-zA-Z0-9_]{3,30}$", cleaned_id):
         raise HTTPException(status_code=400, detail="Connect ID must be 3-30 alphanumeric characters.")
 
-    # Check if user already exists in local SQLite
-    stmt = select(UserModel).where(
-        or_(
-            UserModel.connect_id == cleaned_id,
-            func.lower(UserModel.email) == email_clean
-        )
-    )
-    res = await db.execute(stmt)
-    existing_user = res.scalar_one_or_none()
-
-    # If not in SQLite, check Cloudflare D1
+    # 1. Authoritative check in Cloudflare D1
+    existing_user = await d1.get_user_by_connect_id(cleaned_id)
     if not existing_user:
-        try:
-            d1_user = await d1.fetch_one(
-                "SELECT id, connect_id, email, name, hashed_password, bio, role, status, avatar, created_at FROM users WHERE lower(email) = ? OR lower(connect_id) = ?;",
-                [email_clean, cleaned_id]
-            )
-            if d1_user:
-                try:
-                    created_dt = datetime.fromisoformat(d1_user["created_at"]) if d1_user.get("created_at") else datetime.utcnow()
-                except Exception:
-                    created_dt = datetime.utcnow()
-                existing_user = UserModel(
-                    id=d1_user["id"],
-                    connect_id=d1_user["connect_id"],
-                    email=d1_user["email"],
-                    name=d1_user["name"],
-                    hashed_password=d1_user["hashed_password"],
-                    bio=d1_user.get("bio", "Hey there! I am using Vertex Connect."),
-                    role=d1_user.get("role", "employee"),
-                    status="online",
-                    avatar=d1_user.get("avatar", ""),
-                    created_at=created_dt
-                )
-                db.add(existing_user)
-                await db.commit()
-                await db.refresh(existing_user)
-        except Exception as e:
-            print(f"[Signup Sync] D1 lookup notice: {e}")
+        existing_user = await d1.get_user_by_email(email_clean)
 
     # If existing user is found:
     if existing_user:
-        # If password matches, automatically log them in seamlessly!
-        if verify_password(req.password, existing_user.hashed_password):
-            print(f"[Auth] Existing user @{existing_user.connect_id} logged in seamlessly via signup form.")
-            token = create_access_token(existing_user.id)
+        if verify_password(req.password, existing_user["hashed_password"]):
+            print(f"[Auth] Existing user @{existing_user['connect_id']} logged in seamlessly via signup form.")
+            await d1.log_auth_event(existing_user["id"], existing_user["email"], existing_user["connect_id"], "signup_auto_login", "success", client_ip)
+            token = create_access_token(existing_user["id"])
+            created_dt = datetime.fromisoformat(existing_user["created_at"]) if existing_user.get("created_at") else datetime.utcnow()
             return {
                 "access_token": token,
                 "token_type": "bearer",
                 "user": UserResponse(
-                    id=existing_user.id,
-                    connect_id=existing_user.connect_id,
-                    name=existing_user.name,
-                    email=existing_user.email,
-                    bio=existing_user.bio,
-                    role=existing_user.role,
-                    status=existing_user.status,
-                    avatar=existing_user.avatar,
-                    created_at=existing_user.created_at
+                    id=existing_user["id"],
+                    connect_id=existing_user["connect_id"],
+                    name=existing_user["name"],
+                    email=existing_user["email"],
+                    bio=existing_user.get("bio", "Hey there! I am using Vertex Connect."),
+                    role=existing_user.get("role", "employee"),
+                    status="online",
+                    avatar=existing_user.get("avatar", ""),
+                    created_at=created_dt
                 )
             }
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"An account with this Connect ID (@{existing_user.connect_id}) or Email already exists. Please log in with your password, or use 'Forgot Password' with OTP."
+                detail=f"An account with this Connect ID (@{existing_user['connect_id']}) or Email already exists. Please log in with your password, or use 'Forgot Password' with OTP."
             )
 
     # For new registration, verify OTP if supplied
     if req.otp:
         otp_input = req.otp.strip()
+        code_valid = False
         record = otp_store.get(email_clean)
-        if not record or record["code"].strip() != otp_input:
-            raise HTTPException(status_code=400, detail="Invalid verification code.")
-        if datetime.utcnow() > record["expires_at"]:
+        if record and datetime.utcnow() <= record["expires_at"] and record["code"].strip() == otp_input:
+            code_valid = True
             del otp_store[email_clean]
-            raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new code.")
-        del otp_store[email_clean]
+        if not code_valid:
+            d1_record = await d1.get_otp(email_clean)
+            if d1_record:
+                exp = datetime.fromisoformat(d1_record["expires_at"]) if d1_record.get("expires_at") else datetime.min
+                if datetime.utcnow() <= exp and d1_record.get("code", "").strip() == otp_input:
+                    code_valid = True
+        if not code_valid:
+            raise HTTPException(status_code=400, detail="Invalid verification code.")
+        await d1.delete_otp(email_clean)
 
-    # Count users
-    count_stmt = select(func.count(UserModel.id))
-    count_res = await db.execute(count_stmt)
-    user_count = count_res.scalar_one()
+    # Count users directly in Cloudflare D1
+    total_users = 0
+    try:
+        total_users = await d1.count_users()
+    except Exception:
+        pass
+    role = "supervisor" if total_users == 0 else "employee"
 
-    new_user = UserModel(
+    # Insert directly into Cloudflare D1 (Authoritative Primary Store)
+    new_uid = str(uuid.uuid4())
+    new_hashed = hash_password(req.password)
+    created_user = await d1.create_user(
+        u_id=new_uid,
         connect_id=cleaned_id,
         email=email_clean,
         name=req.name.strip(),
-        hashed_password=hash_password(req.password),
-        role="supervisor" if user_count == 0 else "employee",
+        hashed_password=new_hashed,
+        bio="Hey there! I am using Vertex Connect.",
+        role=role,
         status="online",
-        bio="Hey there! I am using Vertex Connect."
+        avatar=""
     )
-    db.add(new_user)
-    await db.commit()
-    await db.refresh(new_user)
+    await d1.log_auth_event(new_uid, email_clean, cleaned_id, "signup", "success", client_ip)
 
-    # Sync new user to Cloudflare D1
+    # Mirror into local SQLite
     try:
-        await d1.sync_user(new_user)
+        local_user = UserModel(
+            id=new_uid,
+            connect_id=cleaned_id,
+            email=email_clean,
+            name=req.name.strip(),
+            hashed_password=new_hashed,
+            bio="Hey there! I am using Vertex Connect.",
+            role=role,
+            status="online",
+            avatar="",
+            created_at=datetime.utcnow()
+        )
+        db.add(local_user)
+        await db.commit()
     except Exception as e:
-        print(f"[Cloudflare D1] User sync notice: {e}")
+        print(f"[SQLite Mirror] User notice: {e}")
 
-    token = create_access_token(new_user.id)
+    token = create_access_token(new_uid)
+    created_dt = datetime.fromisoformat(created_user["created_at"]) if created_user.get("created_at") else datetime.utcnow()
     return {
         "access_token": token,
         "token_type": "bearer",
         "user": UserResponse(
-            id=new_user.id,
-            connect_id=new_user.connect_id,
-            name=new_user.name,
-            email=new_user.email,
-            bio=new_user.bio,
-            role=new_user.role,
-            status=new_user.status,
-            avatar=new_user.avatar,
-            created_at=new_user.created_at
+            id=created_user["id"],
+            connect_id=created_user["connect_id"],
+            name=created_user["name"],
+            email=created_user["email"],
+            bio=created_user.get("bio", "Hey there! I am using Vertex Connect."),
+            role=created_user.get("role", "employee"),
+            status=created_user.get("status", "online"),
+            avatar=created_user.get("avatar", ""),
+            created_at=created_dt
         )
     }
 
-# 5. Login (Email or Connect ID or Identifier)
+# 5. Login (Email or Connect ID or Identifier via Cloudflare D1)
 @app.post(f"{settings.API_V1_STR}/auth/login", response_model=AuthResponse)
-async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     raw_ident = (req.identifier or req.email or req.connect_id or "").strip()
     if not raw_ident:
         raise HTTPException(status_code=400, detail="Please enter your Connect ID or Email address.")
 
-    clean_id = clean_connect_id(raw_ident)
-    
-    # Flexible lookup in SQLite
-    stmt = select(UserModel).where(
-        or_(
-            func.lower(UserModel.email) == raw_ident.lower(),
-            func.lower(UserModel.connect_id) == clean_id,
-            func.lower(UserModel.connect_id) == raw_ident.lower()
-        )
-    )
-    res = await db.execute(stmt)
-    user = res.scalar_one_or_none()
+    client_ip = request.client.host if request.client else "web/mobile"
 
-    # If not found in SQLite, check Cloudflare D1 on demand
+    # 1. Authoritative lookup in Cloudflare D1
+    user = await d1.get_user_by_identifier(raw_ident)
     if not user:
-        try:
-            d1_user = await d1.fetch_one(
-                "SELECT id, connect_id, email, name, hashed_password, bio, role, status, avatar, created_at FROM users WHERE lower(email) = ? OR lower(connect_id) = ?;",
-                [raw_ident.lower(), clean_id.lower()]
+        clean_id = clean_connect_id(raw_ident)
+        user = await d1.get_user_by_connect_id(clean_id) or await d1.get_user_by_email(raw_ident.lower())
+
+    # Fallback to local SQLite if D1 had intermittent network
+    if not user:
+        clean_id = clean_connect_id(raw_ident)
+        stmt = select(UserModel).where(
+            or_(
+                func.lower(UserModel.email) == raw_ident.lower(),
+                func.lower(UserModel.connect_id) == clean_id,
+                func.lower(UserModel.connect_id) == raw_ident.lower()
             )
-            if d1_user:
-                try:
-                    created_dt = datetime.fromisoformat(d1_user["created_at"]) if d1_user.get("created_at") else datetime.utcnow()
-                except Exception:
-                    created_dt = datetime.utcnow()
-                user = UserModel(
-                    id=d1_user["id"],
-                    connect_id=d1_user["connect_id"],
-                    email=d1_user["email"],
-                    name=d1_user["name"],
-                    hashed_password=d1_user["hashed_password"],
-                    bio=d1_user.get("bio", "Hey there! I am using Vertex Connect."),
-                    role=d1_user.get("role", "employee"),
-                    status="online",
-                    avatar=d1_user.get("avatar", ""),
-                    created_at=created_dt
-                )
-                db.add(user)
-                await db.commit()
-                await db.refresh(user)
-                print(f"[Login Sync] User @{user.connect_id} found in Cloudflare D1 and restored to SQLite!")
-        except Exception as e:
-            print(f"[Login Sync] Cloudflare D1 check error: {e}")
+        )
+        res = await db.execute(stmt)
+        l_user = res.scalar_one_or_none()
+        if l_user:
+            user = {
+                "id": l_user.id,
+                "connect_id": l_user.connect_id,
+                "email": l_user.email,
+                "name": l_user.name,
+                "hashed_password": l_user.hashed_password,
+                "bio": l_user.bio,
+                "role": l_user.role,
+                "status": l_user.status,
+                "avatar": l_user.avatar,
+                "created_at": l_user.created_at.isoformat() if hasattr(l_user.created_at, "isoformat") else str(l_user.created_at)
+            }
+            try:
+                await d1.sync_user(l_user)
+            except Exception:
+                pass
 
     # OTP login verification
     if req.otp:
-        lookup_email = user.email.lower() if user else raw_ident.lower()
+        lookup_email = user["email"].lower() if user else raw_ident.lower()
         otp_input = req.otp.strip()
+        code_valid = False
         record = otp_store.get(lookup_email)
-        if not record or record["code"].strip() != otp_input:
-            raise HTTPException(status_code=400, detail="Invalid verification code.")
-        if datetime.utcnow() > record["expires_at"]:
+        if record and datetime.utcnow() <= record["expires_at"] and record["code"].strip() == otp_input:
+            code_valid = True
             del otp_store[lookup_email]
-            raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new code.")
-        del otp_store[lookup_email]
+        if not code_valid:
+            d1_record = await d1.get_otp(lookup_email)
+            if d1_record:
+                exp = datetime.fromisoformat(d1_record["expires_at"]) if d1_record.get("expires_at") else datetime.min
+                if datetime.utcnow() <= exp and d1_record.get("code", "").strip() == otp_input:
+                    code_valid = True
+        if not code_valid:
+            await d1.log_auth_event(None, lookup_email, None, "login_otp_failed", "failed", client_ip)
+            raise HTTPException(status_code=400, detail="Invalid verification code.")
+        await d1.delete_otp(lookup_email)
         
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No account found with '{raw_ident}'. Please sign up.")
@@ -606,145 +641,186 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No account found for '{raw_ident}'. This Connect ID or Email is not registered. Please sign up."
             )
-        if not verify_password(req.password, user.hashed_password):
+        if not verify_password(req.password, user["hashed_password"]):
+            await d1.log_auth_event(user["id"], user["email"], user["connect_id"], "login_password_failed", "failed", client_ip)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect password. Please check your password or use 'Forgot Password' to sign in with OTP."
             )
 
-    token = create_access_token(user.id)
+    # Check active devices limit (Max 3 devices)
+    active_devices = len(manager.active_users.get(user["id"], set()))
+    if active_devices >= 3:
+        print(f"[Device Limit Notice] User @{user['connect_id']} already has {active_devices} connected devices.")
+
+    # Update status & log event in Cloudflare D1
+    try:
+        await d1.update_user_status(user["id"], "online")
+        await d1.log_auth_event(user["id"], user["email"], user["connect_id"], "login", "success", client_ip)
+    except Exception as e:
+        print(f"[Cloudflare D1] Login logging notice: {e}")
+
+    token = create_access_token(user["id"])
+    created_dt = datetime.fromisoformat(user["created_at"]) if user.get("created_at") else datetime.utcnow()
     return {
         "access_token": token,
         "token_type": "bearer",
         "user": UserResponse(
-            id=user.id,
-            connect_id=user.connect_id,
-            name=user.name,
-            email=user.email,
-            bio=user.bio,
-            role=user.role,
-            status=user.status,
-            avatar=user.avatar,
-            created_at=user.created_at
+            id=user["id"],
+            connect_id=user["connect_id"],
+            name=user["name"],
+            email=user["email"],
+            bio=user.get("bio", "Hey there! I am using Vertex Connect."),
+            role=user.get("role", "employee"),
+            status=user.get("status", "online"),
+            avatar=user.get("avatar", ""),
+            created_at=created_dt
         )
     }
 
-# 5b. Reset Password with OTP
+# 5b. Reset Password with OTP (Cloudflare D1 Primary)
 @app.post(f"{settings.API_V1_STR}/auth/reset-password")
-async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+async def reset_password(req: ResetPasswordRequest, request: Request, db: AsyncSession = Depends(get_db)):
     email_clean = req.email.strip().lower()
     otp_input = req.otp.strip()
-    record = otp_store.get(email_clean)
-    if not record or record["code"].strip() != otp_input:
-        raise HTTPException(status_code=400, detail="Invalid verification code.")
-    if datetime.utcnow() > record["expires_at"]:
-        del otp_store[email_clean]
-        raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new code.")
-    del otp_store[email_clean]
+    client_ip = request.client.host if request.client else "web/mobile"
 
-    stmt = select(UserModel).where(func.lower(UserModel.email) == req.email.lower())
-    res = await db.execute(stmt)
-    user = res.scalar_one_or_none()
+    code_valid = False
+    record = otp_store.get(email_clean)
+    if record and datetime.utcnow() <= record["expires_at"] and record["code"].strip() == otp_input:
+        code_valid = True
+        del otp_store[email_clean]
+    if not code_valid:
+        d1_record = await d1.get_otp(email_clean)
+        if d1_record:
+            exp = datetime.fromisoformat(d1_record["expires_at"]) if d1_record.get("expires_at") else datetime.min
+            if datetime.utcnow() <= exp and d1_record.get("code", "").strip() == otp_input:
+                code_valid = True
+    if not code_valid:
+        raise HTTPException(status_code=400, detail="Invalid verification code.")
+    await d1.delete_otp(email_clean)
+
+    user = await d1.get_user_by_email(email_clean)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No user registered with this email address.")
 
-    user.hashed_password = hash_password(req.new_password)
-    await db.commit()
+    new_hashed = hash_password(req.new_password)
+    await d1.update_user_password(email_clean, new_hashed)
+    await d1.log_auth_event(user["id"], email_clean, user["connect_id"], "password_reset", "success", client_ip)
 
-    # Sync password update to Cloudflare D1
+    # Sync to local sqlite mirror
     try:
-        await d1.sync_user(user)
-    except Exception as e:
-        print(f"[Cloudflare D1] Password sync notice: {e}")
+        stmt = select(UserModel).where(func.lower(UserModel.email) == email_clean)
+        res = await db.execute(stmt)
+        l_user = res.scalar_one_or_none()
+        if l_user:
+            l_user.hashed_password = new_hashed
+            await db.commit()
+    except Exception:
+        pass
 
     return {"success": True, "message": "Password reset successfully. You can now login with your new password."}
 
-# 6. Update Profile
+# 6. Update Profile (Cloudflare D1 Primary)
 @app.put(f"{settings.API_V1_STR}/auth/profile", response_model=UserResponse)
 async def update_profile(req: ProfileUpdateRequest, db: AsyncSession = Depends(get_db)):
-    stmt = select(UserModel).where(UserModel.id == req.user_id)
-    res = await db.execute(stmt)
-    user = res.scalar_one_or_none()
-    if not user:
+    updated = await d1.update_user_profile(
+        user_id=req.user_id,
+        name=req.name,
+        bio=req.bio,
+        status=req.status,
+        avatar=req.avatar
+    )
+    if not updated:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    if req.name is not None and req.name.strip():
-        user.name = req.name.strip()
-    if req.bio is not None:
-        user.bio = req.bio.strip()
-    if req.status is not None:
-        user.status = req.status
-    if req.avatar is not None:
-        user.avatar = req.avatar
-
-    await db.commit()
-    await db.refresh(user)
-
-    # Sync profile update to Cloudflare D1
+    # Mirror into local SQLite
     try:
-        await d1.sync_user(user)
-    except Exception as e:
-        print(f"[Cloudflare D1] Profile sync notice: {e}")
+        stmt = select(UserModel).where(UserModel.id == req.user_id)
+        res = await db.execute(stmt)
+        l_user = res.scalar_one_or_none()
+        if l_user:
+            if req.name is not None and req.name.strip():
+                l_user.name = req.name.strip()
+            if req.bio is not None:
+                l_user.bio = req.bio.strip()
+            if req.status is not None:
+                l_user.status = req.status
+            if req.avatar is not None:
+                l_user.avatar = req.avatar
+            await db.commit()
+    except Exception:
+        pass
 
+    created_dt = datetime.fromisoformat(updated["created_at"]) if updated.get("created_at") else datetime.utcnow()
     return UserResponse(
-        id=user.id,
-        connect_id=user.connect_id,
-        name=user.name,
-        email=user.email,
-        bio=user.bio,
-        role=user.role,
-        status=user.status,
-        avatar=user.avatar,
-        created_at=user.created_at
+        id=updated["id"],
+        connect_id=updated["connect_id"],
+        name=updated["name"],
+        email=updated["email"],
+        bio=updated.get("bio", ""),
+        role=updated.get("role", "employee"),
+        status=updated.get("status", "online"),
+        avatar=updated.get("avatar", ""),
+        created_at=created_dt
     )
 
-# 7. Search Users by Connect ID or Name
+# 7. Search Users by Connect ID or Name (Cloudflare D1 Primary)
 @app.get(f"{settings.API_V1_STR}/users/search")
 async def search_users(q: str = Query(..., min_length=1), current_user_id: str = Query(""), db: AsyncSession = Depends(get_db)):
-    cleaned = clean_connect_id(q)
+    # 1. Search in Cloudflare D1
+    users = await d1.search_users(q)
     
-    stmt = select(UserModel).where(
-        or_(
-            UserModel.connect_id.ilike(f"%{cleaned}%"),
-            UserModel.name.ilike(f"%{q}%"),
-            UserModel.email.ilike(f"%{q}%")
+    # Fallback to local SQLite if D1 had network error
+    if not users:
+        cleaned = clean_connect_id(q)
+        stmt = select(UserModel).where(
+            or_(
+                UserModel.connect_id.ilike(f"%{cleaned}%"),
+                UserModel.name.ilike(f"%{q}%"),
+                UserModel.email.ilike(f"%{q}%")
+            )
         )
-    )
-    res = await db.execute(stmt)
-    users = res.scalars().all()
+        res = await db.execute(stmt)
+        l_users = res.scalars().all()
+        users = [
+            {
+                "id": u.id,
+                "connect_id": u.connect_id,
+                "name": u.name,
+                "email": u.email,
+                "bio": u.bio or "",
+                "status": u.status or "offline",
+                "avatar": u.avatar or ""
+            }
+            for u in l_users
+        ]
 
     # Find connection statuses with current user
     results = []
     for u in users:
-        if u.id == current_user_id:
+        if u["id"] == current_user_id:
             continue
         
-        # Check connection status
-        conn_stmt = select(ConnectionModel).where(
-            or_(
-                and_(ConnectionModel.requester_id == current_user_id, ConnectionModel.receiver_id == u.id),
-                and_(ConnectionModel.requester_id == u.id, ConnectionModel.receiver_id == current_user_id)
-            )
-        )
-        conn_res = await db.execute(conn_stmt)
-        conn = conn_res.scalar_one_or_none()
-
         status = "none"
         connection_id = None
         is_sender = False
-        if conn:
-            status = conn.status
-            connection_id = conn.id
-            is_sender = (conn.requester_id == current_user_id)
+
+        if current_user_id:
+            conn = await d1.get_connection_between(current_user_id, u["id"])
+            if conn:
+                status = conn.get("status", "none")
+                connection_id = conn.get("id")
+                is_sender = (conn.get("requester_id") == current_user_id)
 
         results.append({
-            "id": u.id,
-            "connect_id": u.connect_id,
-            "name": u.name,
-            "email": u.email,
-            "bio": u.bio,
-            "status": u.status,
-            "avatar": u.avatar,
+            "id": u["id"],
+            "connect_id": u["connect_id"],
+            "name": u["name"],
+            "email": u["email"],
+            "bio": u.get("bio", ""),
+            "status": u.get("status", "offline"),
+            "avatar": u.get("avatar", ""),
             "connection_status": status,
             "connection_id": connection_id,
             "is_sender": is_sender
@@ -752,140 +828,125 @@ async def search_users(q: str = Query(..., min_length=1), current_user_id: str =
 
     return results
 
-# 8. Send Connection Request
+# 8. Send Connection Request (Cloudflare D1 Primary)
 @app.post(f"{settings.API_V1_STR}/connections/request")
 async def request_connection(req: ConnectRequestModel, db: AsyncSession = Depends(get_db)):
     target_clean = clean_connect_id(req.target_connect_id)
     
-    # Get target user
-    stmt = select(UserModel).where(UserModel.connect_id == target_clean)
-    res = await db.execute(stmt)
-    target = res.scalar_one_or_none()
+    # Get target user from Cloudflare D1
+    target = await d1.get_user_by_connect_id(target_clean) or await d1.get_user_by_identifier(target_clean)
     if not target:
         raise HTTPException(status_code=404, detail=f"No user found with Connect ID @{target_clean}")
 
-    if target.id == req.from_user_id:
+    if target["id"] == req.from_user_id:
         raise HTTPException(status_code=400, detail="You cannot connect with yourself.")
 
-    # Check if connection already exists
-    conn_stmt = select(ConnectionModel).where(
-        or_(
-            and_(ConnectionModel.requester_id == req.from_user_id, ConnectionModel.receiver_id == target.id),
-            and_(ConnectionModel.requester_id == target.id, ConnectionModel.receiver_id == req.from_user_id)
-        )
-    )
-    conn_res = await db.execute(conn_stmt)
-    existing_conn = conn_res.scalar_one_or_none()
-
+    # Check existing connection
+    existing_conn = await d1.get_connection_between(req.from_user_id, target["id"])
     if existing_conn:
-        if existing_conn.status == "accepted":
+        if existing_conn.get("status") == "accepted":
             return {"success": True, "message": "Already connected!", "status": "accepted"}
         return {"success": True, "message": "Connection request already pending.", "status": "pending"}
 
-    # Create new connection request
-    new_conn = ConnectionModel(
+    # Create new connection in Cloudflare D1
+    new_conn_id = str(uuid.uuid4())
+    new_conn = await d1.create_connection(
+        conn_id=new_conn_id,
         requester_id=req.from_user_id,
-        receiver_id=target.id,
+        receiver_id=target["id"],
         status="pending"
     )
-    db.add(new_conn)
-    await db.commit()
-    await db.refresh(new_conn)
+
+    # Mirror into SQLite
+    try:
+        local_conn = ConnectionModel(
+            id=new_conn_id,
+            requester_id=req.from_user_id,
+            receiver_id=target["id"],
+            status="pending"
+        )
+        db.add(local_conn)
+        await db.commit()
+    except Exception as e:
+        print(f"[SQLite Mirror] Connection notice: {e}")
 
     # Notify target user via WebSocket immediately (< 1ms)
-    await manager.send_to_user(target.id, {
+    await manager.send_to_user(target["id"], {
         "type": "connection_request",
-        "connection_id": new_conn.id,
+        "connection_id": new_conn_id,
         "from_user_id": req.from_user_id,
         "message": "You received a new connection request!"
     })
 
-    # Background async sync connection to Cloudflare D1
-    async def bg_sync_conn():
-        try:
-            await d1.sync_connection(new_conn)
-        except Exception as e:
-            print(f"[Cloudflare D1] Background connection sync notice: {e}")
-
-    asyncio.create_task(bg_sync_conn())
-
     return {
         "success": True,
-        "message": f"Connection request sent to @{target.connect_id}!",
-        "connection_id": new_conn.id,
+        "message": f"Connection request sent to @{target['connect_id']}!",
+        "connection_id": new_conn_id,
         "status": "pending"
     }
 
-# 9. Accept Connection Request
+# 9. Accept Connection Request (Cloudflare D1 Primary)
 @app.post(f"{settings.API_V1_STR}/connections/accept")
 async def accept_connection(req: AcceptConnectModel, db: AsyncSession = Depends(get_db)):
-    stmt = select(ConnectionModel).where(ConnectionModel.id == req.connection_id)
-    res = await db.execute(stmt)
-    conn = res.scalar_one_or_none()
+    conn = await d1.fetch_one("SELECT * FROM user_connections WHERE id = ?;", [req.connection_id])
     if not conn:
         raise HTTPException(status_code=404, detail="Connection request not found.")
 
-    conn.status = "accepted"
-    conn.updated_at = datetime.utcnow()
-    await db.commit()
+    await d1.update_connection_status(req.connection_id, "accepted")
+
+    # Mirror to SQLite
+    try:
+        stmt = select(ConnectionModel).where(ConnectionModel.id == req.connection_id)
+        res = await db.execute(stmt)
+        l_conn = res.scalar_one_or_none()
+        if l_conn:
+            l_conn.status = "accepted"
+            l_conn.updated_at = datetime.utcnow()
+            await db.commit()
+    except Exception as e:
+        print(f"[SQLite Mirror] Accept notice: {e}")
 
     # Notify requester immediately via WebSocket (< 1ms)
-    await manager.send_to_user(conn.requester_id, {
+    await manager.send_to_user(conn["requester_id"], {
         "type": "connection_accepted",
-        "connection_id": conn.id,
+        "connection_id": conn["id"],
         "message": "Your connection request was accepted! You can now chat."
     })
 
-    # Background async sync accepted status to Cloudflare D1
-    async def bg_sync_accept():
-        try:
-            await d1.sync_connection(conn)
-        except Exception as e:
-            print(f"[Cloudflare D1] Background accept sync notice: {e}")
-
-    asyncio.create_task(bg_sync_accept())
-
     return {"success": True, "message": "Connection accepted! You can now chat."}
 
-# 10. List User Connections (Friends & Pending)
+# 10. List User Connections (Cloudflare D1 Primary)
 @app.get(f"{settings.API_V1_STR}/connections")
-async def list_connections(user_id: str = Query(...), db: AsyncSession = Depends(get_db)):
-    stmt = select(ConnectionModel).where(
-        or_(ConnectionModel.requester_id == user_id, ConnectionModel.receiver_id == user_id)
-    )
-    res = await db.execute(stmt)
-    connections = res.scalars().all()
-
+async def list_connections(user_id: str = Query(...)):
+    connections = await d1.get_user_connections(user_id)
     friends = []
     pending_incoming = []
     pending_outgoing = []
 
     for c in connections:
-        other_id = c.receiver_id if c.requester_id == user_id else c.requester_id
-        user_stmt = select(UserModel).where(UserModel.id == other_id)
-        user_res = await db.execute(user_stmt)
-        other_user = user_res.scalar_one_or_none()
+        other_id = c["receiver_id"] if c["requester_id"] == user_id else c["requester_id"]
+        other_user = await d1.get_user_by_id(other_id)
         if not other_user:
             continue
 
         item = {
-            "connection_id": c.id,
-            "user_id": other_user.id,
-            "name": other_user.name,
-            "connect_id": other_user.connect_id,
-            "bio": other_user.bio,
-            "status": other_user.status,
-            "avatar": other_user.avatar,
-            "created_at": c.created_at
+            "connection_id": c["id"],
+            "user_id": other_user["id"],
+            "name": other_user["name"],
+            "connect_id": other_user["connect_id"],
+            "bio": other_user.get("bio", ""),
+            "status": other_user.get("status", "offline"),
+            "avatar": other_user.get("avatar", ""),
+            "created_at": c["created_at"]
         }
 
-        if c.status == "accepted":
+        if c["status"] == "accepted":
             # Generate consistent conversation_id for 1-to-1 chat
-            ids = sorted([user_id, other_user.id])
+            ids = sorted([user_id, other_user["id"]])
             item["conversation_id"] = f"direct_{ids[0]}_{ids[1]}"
             friends.append(item)
-        elif c.status == "pending":
-            if c.receiver_id == user_id:
+        elif c["status"] == "pending":
+            if c["receiver_id"] == user_id:
                 pending_incoming.append(item)
             else:
                 pending_outgoing.append(item)
@@ -896,7 +957,7 @@ async def list_connections(user_id: str = Query(...), db: AsyncSession = Depends
         "pending_outgoing": pending_outgoing
     }
 
-# 11. Send Message (Text, Voice Audio Notes & File Attachments)
+# 11. Send Message (Text, Voice Audio Notes & File Attachments via Cloudflare D1)
 @app.post(f"{settings.API_V1_STR}/messages/send")
 async def send_message(req: SendMessageModel, db: AsyncSession = Depends(get_db)):
     is_receiver_online = bool(
@@ -905,72 +966,104 @@ async def send_message(req: SendMessageModel, db: AsyncSession = Depends(get_db)
         and len(manager.active_users[req.receiver_id]) > 0
     )
     delivery_status = "delivered" if is_receiver_online else "sent"
-
-    new_msg = MessageModel(
-        conversation_id=req.conversation_id,
-        sender_id=req.sender_id,
-        sender_name=req.sender_name,
-        receiver_id=req.receiver_id,
-        content=req.content,
-        file_url=req.file_url,
-        file_name=req.file_name,
-        file_size=req.file_size,
-        file_type=req.file_type,
-        reply_to_id=req.reply_to_id,
-        reply_to_snippet=req.reply_to_snippet,
-        reactions={},
-        is_read=False
-    )
-    db.add(new_msg)
-    await db.commit()
-    await db.refresh(new_msg)
+    msg_id = str(uuid.uuid4())
+    created_at = datetime.utcnow().isoformat()
 
     payload = {
-        "id": new_msg.id,
-        "conversation_id": new_msg.conversation_id,
-        "sender_id": new_msg.sender_id,
-        "sender_name": new_msg.sender_name,
-        "receiver_id": new_msg.receiver_id,
-        "content": new_msg.content,
-        "file_url": new_msg.file_url,
-        "file_name": new_msg.file_name,
-        "file_size": new_msg.file_size,
-        "file_type": new_msg.file_type,
-        "reply_to_id": new_msg.reply_to_id,
-        "reply_to_snippet": new_msg.reply_to_snippet,
-        "reactions": new_msg.reactions or {},
+        "id": msg_id,
+        "conversation_id": req.conversation_id,
+        "sender_id": req.sender_id,
+        "sender_name": req.sender_name,
+        "receiver_id": req.receiver_id,
+        "content": req.content,
+        "file_url": req.file_url,
+        "file_name": req.file_name,
+        "file_size": req.file_size,
+        "file_type": req.file_type,
+        "reply_to_id": req.reply_to_id,
+        "reply_to_snippet": req.reply_to_snippet,
+        "reactions": {},
         "is_read": False,
         "status": delivery_status,
-        "created_at": new_msg.created_at.isoformat()
+        "created_at": created_at
     }
 
-    # Immediately deliver in real-time (< 1ms) to receiver
+    # Store directly in Cloudflare D1
+    try:
+        await d1.save_message(payload)
+    except Exception as e:
+        print(f"[Cloudflare D1] Message save notice: {e}")
+
+    # Mirror into SQLite
+    try:
+        new_msg = MessageModel(
+            id=msg_id,
+            conversation_id=req.conversation_id,
+            sender_id=req.sender_id,
+            sender_name=req.sender_name,
+            receiver_id=req.receiver_id,
+            content=req.content,
+            file_url=req.file_url,
+            file_name=req.file_name,
+            file_size=req.file_size,
+            file_type=req.file_type,
+            reply_to_id=req.reply_to_id,
+            reply_to_snippet=req.reply_to_snippet,
+            reactions={},
+            is_read=False
+        )
+        db.add(new_msg)
+        await db.commit()
+    except Exception as e:
+        print(f"[SQLite Mirror] Message notice: {e}")
+
+    # Deliver via WebSocket (< 1ms)
     if req.receiver_id:
         await manager.send_to_user(req.receiver_id, {
             "type": "new_message",
             "message": payload
         })
+        await manager.send_to_user(req.sender_id, {
+            "type": "message_delivered",
+            "message_id": msg_id,
+            "status": delivery_status
+        })
     else:
-        # Broadcast to conversation
         await manager.broadcast({
             "type": "new_message",
             "message": payload
         })
 
-    # Background async sync chat message to Cloudflare D1 (0 latency impact on user)
-    async def bg_sync_msg():
-        try:
-            await d1.sync_message(new_msg)
-        except Exception as e:
-            print(f"[Cloudflare D1] Background message sync notice: {e}")
-
-    asyncio.create_task(bg_sync_msg())
-
     return {"success": True, "message": payload}
 
-# 12. Get Messages for a Conversation
+# 12. Get Messages for a Conversation (Cloudflare D1 Primary)
 @app.get(f"{settings.API_V1_STR}/messages/{{conversation_id}}")
 async def get_messages(conversation_id: str, db: AsyncSession = Depends(get_db)):
+    d1_msgs = await d1.get_messages(conversation_id)
+    if d1_msgs:
+        return [
+            {
+                "id": m["id"],
+                "conversation_id": m["conversation_id"],
+                "sender_id": m["sender_id"],
+                "sender_name": m["sender_name"],
+                "receiver_id": m.get("receiver_id"),
+                "content": m["content"],
+                "file_url": m.get("file_url"),
+                "file_name": m.get("file_name"),
+                "file_size": m.get("file_size"),
+                "file_type": m.get("file_type"),
+                "reply_to_id": m.get("reply_to_id"),
+                "reply_to_snippet": m.get("reply_to_snippet"),
+                "reactions": json.loads(m["reactions"]) if (isinstance(m.get("reactions"), str) and m["reactions"]) else (m.get("reactions") or {}),
+                "is_read": bool(m.get("is_read")),
+                "status": "delivered" if (m.get("receiver_id") and m["receiver_id"] in manager.active_users and len(manager.active_users[m["receiver_id"]]) > 0) else "sent",
+                "created_at": m["created_at"]
+            }
+            for m in d1_msgs
+        ]
+
+    # Fallback to local SQLite if D1 had empty or error
     stmt = select(MessageModel).where(
         MessageModel.conversation_id == conversation_id
     ).order_by(MessageModel.created_at.asc())
@@ -999,27 +1092,34 @@ async def get_messages(conversation_id: str, db: AsyncSession = Depends(get_db))
         for m in msgs
     ]
 
-# 12a. Mark Messages as Read (WhatsApp Blue Ticks Sync)
+# 12a. Mark Messages as Read (WhatsApp Blue Ticks Sync via Cloudflare D1)
 class MarkReadRequest(BaseModel):
     conversation_id: str
     reader_id: str
 
 @app.post(f"{settings.API_V1_STR}/messages/read")
 async def mark_messages_read(req: MarkReadRequest, db: AsyncSession = Depends(get_db)):
-    stmt = select(MessageModel).where(
-        and_(
-            MessageModel.conversation_id == req.conversation_id,
-            MessageModel.receiver_id == req.reader_id,
-            MessageModel.is_read == False
-        )
-    )
-    res = await db.execute(stmt)
-    unread_msgs = res.scalars().all()
+    try:
+        await d1.mark_messages_read(req.conversation_id, req.reader_id)
+    except Exception as e:
+        print(f"[Cloudflare D1] Mark read notice: {e}")
 
-    if unread_msgs:
-        for m in unread_msgs:
-            m.is_read = True
-        await db.commit()
+    try:
+        stmt = select(MessageModel).where(
+            and_(
+                MessageModel.conversation_id == req.conversation_id,
+                MessageModel.receiver_id == req.reader_id,
+                MessageModel.is_read == False
+            )
+        )
+        res = await db.execute(stmt)
+        unread_msgs = res.scalars().all()
+        if unread_msgs:
+            for m in unread_msgs:
+                m.is_read = True
+            await db.commit()
+    except Exception:
+        pass
 
     # Broadcast read receipt via WebSocket so sender gets immediate double blue ticks
     await manager.broadcast({
@@ -1028,9 +1128,9 @@ async def mark_messages_read(req: MarkReadRequest, db: AsyncSession = Depends(ge
         "reader_id": req.reader_id
     })
 
-    return {"success": True, "marked_count": len(unread_msgs)}
+    return {"success": True, "read": True}
 
-# 12b. Add Emoji Reaction to a Message
+# 12b. Add Emoji Reaction to a Message (Cloudflare D1 & Realtime Sync)
 @app.post(f"{settings.API_V1_STR}/messages/react")
 async def react_to_message(req: MessageReactModel, db: AsyncSession = Depends(get_db)):
     stmt = select(MessageModel).where(MessageModel.id == req.message_id)
@@ -1054,6 +1154,12 @@ async def react_to_message(req: MessageReactModel, db: AsyncSession = Depends(ge
 
     msg.reactions = reactions
     await db.commit()
+
+    # Sync reaction to Cloudflare D1
+    try:
+        await d1.react_message(req.message_id, reactions)
+    except Exception as e:
+        print(f"[Cloudflare D1] Reaction sync notice: {e}")
 
     # Broadcast reaction in real-time
     await manager.broadcast({
@@ -1205,7 +1311,9 @@ async def get_intelligence_history(db: AsyncSession = Depends(get_db)):
 # 15. Realtime WebSocket for direct messaging, presence, and WebRTC/LiveKit call signaling
 @app.websocket(f"{settings.API_V1_STR}/ws/{{user_id}}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    await manager.connect(user_id, websocket)
+    connected = await manager.connect(user_id, websocket)
+    if not connected:
+        return
     try:
         while True:
             data = await websocket.receive_json()
