@@ -200,8 +200,17 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   targetUrl.port = backendBase.port;
 
   try {
-    const proxyReq = new Request(targetUrl.toString(), request);
-    const proxyRes = await fetch(proxyReq);
+    const hasBody = !["GET", "HEAD"].includes(request.method);
+    const body = hasBody ? await request.arrayBuffer() : undefined;
+    const reqHeaders = new Headers(request.headers);
+    reqHeaders.delete("host");
+
+    const proxyRes = await fetch(targetUrl.toString(), {
+      method: request.method,
+      headers: reqHeaders,
+      body: body,
+      redirect: "follow",
+    });
     
     // Preserve response headers and add CORS
     const resHeaders = new Headers(proxyRes.headers);

@@ -460,7 +460,13 @@ async def signup(req: SignupRequest, request: Request, db: AsyncSession = Depend
 
     # If existing user is found:
     if existing_user:
-        if verify_password(req.password, existing_user["hashed_password"]):
+        hashed_pw = existing_user.get("hashed_password")
+        if not hashed_pw:
+            fresh = await d1.fetch_one("SELECT * FROM users WHERE id = ?;", [existing_user["id"]])
+            if fresh and fresh.get("hashed_password"):
+                existing_user["hashed_password"] = fresh["hashed_password"]
+                hashed_pw = fresh["hashed_password"]
+        if hashed_pw and verify_password(req.password, hashed_pw):
             print(f"[Auth] Existing user @{existing_user['connect_id']} logged in seamlessly via signup form.")
             await d1.log_auth_event(existing_user["id"], existing_user["email"], existing_user["connect_id"], "signup_auto_login", "success", client_ip)
             token = create_access_token(existing_user["id"])
@@ -641,7 +647,15 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No account found for '{raw_ident}'. This Connect ID or Email is not registered. Please sign up."
             )
-        if not verify_password(req.password, user["hashed_password"]):
+        hashed_pw = user.get("hashed_password")
+        if not hashed_pw:
+            fresh = await d1.fetch_one("SELECT * FROM users WHERE id = ?;", [user["id"]])
+            if fresh and fresh.get("hashed_password"):
+                user["hashed_password"] = fresh["hashed_password"]
+                hashed_pw = fresh["hashed_password"]
+            else:
+                raise HTTPException(status_code=500, detail="Account security profile corrupted. Please reset password with OTP.")
+        if not verify_password(req.password, hashed_pw):
             await d1.log_auth_event(user["id"], user["email"], user["connect_id"], "login_password_failed", "failed", client_ip)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

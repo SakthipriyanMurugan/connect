@@ -39,6 +39,16 @@ class CloudflareD1Client:
     def _cache_user_record(self, u: dict):
         if not u or not isinstance(u, dict):
             return
+        # If incoming record lacks hashed_password, do NOT overwrite or pollute auth cache
+        if "hashed_password" not in u:
+            uid = str(u.get("id"))
+            if uid in self._cache_users_by_id and "hashed_password" in self._cache_users_by_id[uid]:
+                # Merge safe non-sensitive profile fields only
+                safe_copy = dict(u)
+                safe_copy["hashed_password"] = self._cache_users_by_id[uid]["hashed_password"]
+                self._cache_users_by_id[uid] = safe_copy
+            return
+
         if u.get("id"):
             self._cache_users_by_id[str(u["id"])] = u
         if u.get("connect_id"):
@@ -190,8 +200,9 @@ class CloudflareD1Client:
         return u_dict
 
     async def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
-        if user_id in self._cache_users_by_id:
-            return self._cache_users_by_id[user_id]
+        cached = self._cache_users_by_id.get(str(user_id))
+        if cached and cached.get("hashed_password"):
+            return cached
         sql = "SELECT id, connect_id, email, name, hashed_password, bio, role, status, avatar, created_at FROM users WHERE id = ?;"
         user = await self.fetch_one(sql, [user_id])
         if user:
@@ -200,8 +211,9 @@ class CloudflareD1Client:
 
     async def get_user_by_connect_id(self, connect_id: str) -> Optional[Dict[str, Any]]:
         cleaned = connect_id.strip().lower().replace("@", "")
-        if cleaned in self._cache_users_by_connect_id:
-            return self._cache_users_by_connect_id[cleaned]
+        cached = self._cache_users_by_connect_id.get(cleaned)
+        if cached and cached.get("hashed_password"):
+            return cached
         sql = "SELECT id, connect_id, email, name, hashed_password, bio, role, status, avatar, created_at FROM users WHERE lower(connect_id) = ?;"
         user = await self.fetch_one(sql, [cleaned])
         if user:
@@ -210,8 +222,9 @@ class CloudflareD1Client:
 
     async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         em = email.strip().lower()
-        if em in self._cache_users_by_email:
-            return self._cache_users_by_email[em]
+        cached = self._cache_users_by_email.get(em)
+        if cached and cached.get("hashed_password"):
+            return cached
         sql = "SELECT id, connect_id, email, name, hashed_password, bio, role, status, avatar, created_at FROM users WHERE lower(email) = ?;"
         user = await self.fetch_one(sql, [em])
         if user:
@@ -220,10 +233,9 @@ class CloudflareD1Client:
 
     async def get_user_by_identifier(self, identifier: str) -> Optional[Dict[str, Any]]:
         ident = identifier.strip().lower().replace("@", "")
-        if ident in self._cache_users_by_connect_id:
-            return self._cache_users_by_connect_id[ident]
-        if ident in self._cache_users_by_email:
-            return self._cache_users_by_email[ident]
+        cached = self._cache_users_by_connect_id.get(ident) or self._cache_users_by_email.get(ident)
+        if cached and cached.get("hashed_password"):
+            return cached
         sql = """
         SELECT id, connect_id, email, name, hashed_password, bio, role, status, avatar, created_at
         FROM users
