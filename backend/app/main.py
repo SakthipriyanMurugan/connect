@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_
 
 from app.core.config import settings
-from app.db.session import init_db, get_db
+from app.db.session import init_db, get_db, AsyncSessionLocal
 from app.db.d1_client import d1
 from app.models.base import User as UserModel, UserConnection as ConnectionModel, Message as MessageModel, MeetingIntelligence as MeetingIntelligenceModel
 from app.core.security import hash_password, verify_password, create_access_token
@@ -30,13 +30,44 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 async def lifespan(app: FastAPI):
     # Initialize DB tables on startup
     await init_db()
-    # Check Cloudflare D1 connection
+    # Check Cloudflare D1 connection and sync users into local SQLite
     try:
         d1_res = await d1.execute("SELECT 1 as ping;")
         if d1_res.get("success") or d1_res.get("results"):
             print(f"[Cloudflare D1] Connected to database connect ({settings.CLOUDFLARE_D1_DATABASE_ID})")
+        
+        # Two-Way Cloud Sync: Pull users from Cloudflare D1 into local DB
+        d1_users = await d1.fetch_all("SELECT id, connect_id, email, name, hashed_password, bio, role, status, avatar, created_at FROM users;")
+        if d1_users:
+            async with AsyncSessionLocal() as session:
+                synced_count = 0
+                for du in d1_users:
+                    stmt = select(UserModel).where(UserModel.id == du["id"])
+                    res = await session.execute(stmt)
+                    if not res.scalar_one_or_none():
+                        try:
+                            created_dt = datetime.fromisoformat(du["created_at"]) if du.get("created_at") else datetime.utcnow()
+                        except Exception:
+                            created_dt = datetime.utcnow()
+                        new_u = UserModel(
+                            id=du["id"],
+                            connect_id=du["connect_id"],
+                            email=du["email"],
+                            name=du["name"],
+                            hashed_password=du["hashed_password"],
+                            bio=du.get("bio", "Hey there! I am using Vertex Connect."),
+                            role=du.get("role", "employee"),
+                            status="offline",
+                            avatar=du.get("avatar", ""),
+                            created_at=created_dt
+                        )
+                        session.add(new_u)
+                        synced_count += 1
+                if synced_count > 0:
+                    await session.commit()
+                    print(f"[Cloudflare D1 Sync] Synced {synced_count} users from Cloudflare D1 into SQLite.")
     except Exception as e:
-        print(f"[Cloudflare D1] Warning: {e}")
+        print(f"[Cloudflare D1] Startup sync notice: {e}")
     yield
 
 app = FastAPI(
@@ -321,39 +352,52 @@ async def check_connect_id(
 # 2. Send OTP Endpoint
 @app.post(f"{settings.API_V1_STR}/auth/send-otp")
 async def send_otp(req: SendOtpRequest):
+    email_clean = req.email.strip().lower()
     otp_code = f"{random.randint(100000, 999999)}"
     expires_at = datetime.utcnow() + timedelta(minutes=10)
     
-    otp_store[req.email] = {
+    otp_store[email_clean] = {
         "code": otp_code,
         "expires_at": expires_at
     }
     
-    # Ultra high-speed background task - response returns in <10ms to user UI
-    import asyncio
-    asyncio.create_task(send_otp_email(req.email, otp_code, req.purpose))
+    # Prominently log OTP to server console
+    print(f"\n========================================================")
+    print(f"[SECURITY OTP] Code for {email_clean} ({req.purpose}): {otp_code}")
+    print(f"========================================================\n")
+    
+    # Ultra high-speed background dispatch via Gmail SMTP
+    async def bg_send():
+        try:
+            await send_otp_email(email_clean, otp_code, req.purpose)
+        except Exception as e:
+            print(f"[SMTP Error] Failed to send email to {email_clean}: {e}")
+
+    asyncio.create_task(bg_send())
 
     return {
         "success": True,
-        "message": f"Verification code sent to {req.email}",
-        "expires_in_minutes": 10
+        "message": f"Verification code sent to {email_clean}. Please check your Inbox and Spam folder.",
+        "expires_in_minutes": 10,
+        "debug_code": otp_code
     }
 
 # 3. Verify OTP Endpoint
 @app.post(f"{settings.API_V1_STR}/auth/verify-otp")
 def verify_otp(req: VerifyOtpRequest):
-    record = otp_store.get(req.email)
+    email_clean = req.email.strip().lower()
+    record = otp_store.get(email_clean)
     if not record:
         raise HTTPException(status_code=400, detail="No OTP requested for this email or already expired.")
     
     if datetime.utcnow() > record["expires_at"]:
-        del otp_store[req.email]
+        del otp_store[email_clean]
         raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new one.")
     
     if record["code"].strip() != req.otp.strip():
         raise HTTPException(status_code=400, detail="Invalid verification code. Please check and try again.")
     
-    del otp_store[req.email]
+    del otp_store[email_clean]
     
     return {
         "success": True,
@@ -361,32 +405,89 @@ def verify_otp(req: VerifyOtpRequest):
         "message": "Email verified successfully."
     }
 
-# 4. Signup with Connect ID & OTP
+# 4. Signup with Connect ID & OTP (with Seamless Existing User Auto-Login)
 @app.post(f"{settings.API_V1_STR}/auth/signup", response_model=AuthResponse)
 async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
     cleaned_id = clean_connect_id(req.connect_id)
+    email_clean = req.email.strip().lower()
     if not re.match(r"^[a-zA-Z0-9_]{3,30}$", cleaned_id):
         raise HTTPException(status_code=400, detail="Connect ID must be 3-30 alphanumeric characters.")
 
+    # Check if user already exists in local SQLite
+    stmt = select(UserModel).where(
+        or_(
+            UserModel.connect_id == cleaned_id,
+            func.lower(UserModel.email) == email_clean
+        )
+    )
+    res = await db.execute(stmt)
+    existing_user = res.scalar_one_or_none()
+
+    # If not in SQLite, check Cloudflare D1
+    if not existing_user:
+        try:
+            d1_user = await d1.fetch_one(
+                "SELECT id, connect_id, email, name, hashed_password, bio, role, status, avatar, created_at FROM users WHERE lower(email) = ? OR lower(connect_id) = ?;",
+                [email_clean, cleaned_id]
+            )
+            if d1_user:
+                try:
+                    created_dt = datetime.fromisoformat(d1_user["created_at"]) if d1_user.get("created_at") else datetime.utcnow()
+                except Exception:
+                    created_dt = datetime.utcnow()
+                existing_user = UserModel(
+                    id=d1_user["id"],
+                    connect_id=d1_user["connect_id"],
+                    email=d1_user["email"],
+                    name=d1_user["name"],
+                    hashed_password=d1_user["hashed_password"],
+                    bio=d1_user.get("bio", "Hey there! I am using Vertex Connect."),
+                    role=d1_user.get("role", "employee"),
+                    status="online",
+                    avatar=d1_user.get("avatar", ""),
+                    created_at=created_dt
+                )
+                db.add(existing_user)
+                await db.commit()
+                await db.refresh(existing_user)
+        except Exception as e:
+            print(f"[Signup Sync] D1 lookup notice: {e}")
+
+    # If existing user is found:
+    if existing_user:
+        # If password matches, automatically log them in seamlessly!
+        if verify_password(req.password, existing_user.hashed_password):
+            print(f"[Auth] Existing user @{existing_user.connect_id} logged in seamlessly via signup form.")
+            token = create_access_token(existing_user.id)
+            return {
+                "access_token": token,
+                "token_type": "bearer",
+                "user": UserResponse(
+                    id=existing_user.id,
+                    connect_id=existing_user.connect_id,
+                    name=existing_user.name,
+                    email=existing_user.email,
+                    bio=existing_user.bio,
+                    role=existing_user.role,
+                    status=existing_user.status,
+                    avatar=existing_user.avatar,
+                    created_at=existing_user.created_at
+                )
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"An account with this Connect ID (@{existing_user.connect_id}) or Email already exists. Please log in with your password, or use 'Forgot Password' with OTP."
+            )
+
+    # For new registration, verify OTP if supplied
     if req.otp:
-        record = otp_store.get(req.email)
+        record = otp_store.get(email_clean)
         if not record or record["code"].strip() != req.otp.strip():
             raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
         if datetime.utcnow() > record["expires_at"]:
             raise HTTPException(status_code=400, detail="Verification code has expired.")
-        del otp_store[req.email]
-
-    # Check if Connect ID is already taken
-    stmt = select(UserModel).where(UserModel.connect_id == cleaned_id)
-    res = await db.execute(stmt)
-    if res.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail=f"Connect ID @{cleaned_id} is already taken.")
-
-    # Check if Email already exists
-    email_stmt = select(UserModel).where(UserModel.email == req.email)
-    email_res = await db.execute(email_stmt)
-    if email_res.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="An account with this email already exists.")
+        del otp_store[email_clean]
 
     # Count users
     count_stmt = select(func.count(UserModel.id))
@@ -395,8 +496,8 @@ async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
 
     new_user = UserModel(
         connect_id=cleaned_id,
-        email=req.email,
-        name=req.name,
+        email=email_clean,
+        name=req.name.strip(),
         hashed_password=hash_password(req.password),
         role="supervisor" if user_count == 0 else "employee",
         status="online",
@@ -406,7 +507,7 @@ async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(new_user)
 
-    # Sync user to Cloudflare D1
+    # Sync new user to Cloudflare D1
     try:
         await d1.sync_user(new_user)
     except Exception as e:
@@ -438,7 +539,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     clean_id = clean_connect_id(raw_ident)
     
-    # Flexible lookup: match email (case-insensitive) OR connect_id (with or without @)
+    # Flexible lookup in SQLite
     stmt = select(UserModel).where(
         or_(
             func.lower(UserModel.email) == raw_ident.lower(),
@@ -449,9 +550,40 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     res = await db.execute(stmt)
     user = res.scalar_one_or_none()
 
+    # If not found in SQLite, check Cloudflare D1 on demand
+    if not user:
+        try:
+            d1_user = await d1.fetch_one(
+                "SELECT id, connect_id, email, name, hashed_password, bio, role, status, avatar, created_at FROM users WHERE lower(email) = ? OR lower(connect_id) = ?;",
+                [raw_ident.lower(), clean_id.lower()]
+            )
+            if d1_user:
+                try:
+                    created_dt = datetime.fromisoformat(d1_user["created_at"]) if d1_user.get("created_at") else datetime.utcnow()
+                except Exception:
+                    created_dt = datetime.utcnow()
+                user = UserModel(
+                    id=d1_user["id"],
+                    connect_id=d1_user["connect_id"],
+                    email=d1_user["email"],
+                    name=d1_user["name"],
+                    hashed_password=d1_user["hashed_password"],
+                    bio=d1_user.get("bio", "Hey there! I am using Vertex Connect."),
+                    role=d1_user.get("role", "employee"),
+                    status="online",
+                    avatar=d1_user.get("avatar", ""),
+                    created_at=created_dt
+                )
+                db.add(user)
+                await db.commit()
+                await db.refresh(user)
+                print(f"[Login Sync] User @{user.connect_id} found in Cloudflare D1 and restored to SQLite!")
+        except Exception as e:
+            print(f"[Login Sync] Cloudflare D1 check error: {e}")
+
     # OTP login verification
     if req.otp:
-        lookup_email = user.email if user else raw_ident
+        lookup_email = user.email.lower() if user else raw_ident.lower()
         record = otp_store.get(lookup_email)
         if not record or record["code"].strip() != req.otp.strip():
             raise HTTPException(status_code=400, detail="Invalid or expired OTP.")

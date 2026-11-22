@@ -23,7 +23,7 @@ services:
       - key: CLOUDFLARE_D1_DATABASE_ID
         value: "6926e446-a98b-4c6f-9466-f9dc6d4966a9"
       - key: CLOUDFLARE_API_TOKEN
-        value: "cfoat_aWp5oOe85ReLzUwfKPK_FcM4AJHbfxxjXVUouNP1L74.4TUmWSreK9PX1HcdtS5Aodmow05kRQF2DhBFAziJJMw"
+        value: "cfoat_snlXr9uNDCnms6kehqSc1ecMOQfqWgqRSXv6e0aLWBI.061m0a_A4Z8xnpYTvmdNcceM3yMHPDe4wf-nlmSKe0E"
       - key: LIVEKIT_URL
         value: "wss://connect-jflh7xn8.livekit.cloud"
       - key: LIVEKIT_API_KEY

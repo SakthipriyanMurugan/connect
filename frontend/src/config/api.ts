@@ -7,10 +7,6 @@ const hostname = isBrowser ? window.location.hostname : 'localhost';
 export const RENDER_CLOUD_HTTP = 'https://vertex-connect-backend.onrender.com';
 export const RENDER_CLOUD_WS = 'wss://vertex-connect-backend.onrender.com';
 
-// 2. Active Live Cloudflare Tunnel (Immediate High-Speed Access)
-export const LIVE_TUNNEL_HTTP = 'https://roof-cotton-interference-suffered.trycloudflare.com';
-export const LIVE_TUNNEL_WS = 'wss://roof-cotton-interference-suffered.trycloudflare.com';
-
 function resolveBaseUrl(): string {
   if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL as string;
   if (isBrowser && window.localStorage.getItem('VERTEX_API_URL')) {
@@ -22,8 +18,8 @@ function resolveBaseUrl(): string {
   if (hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
     return `http://${hostname}:8000`;
   }
-  // Production Cloudflare Pages default: Live active tunnel
-  return LIVE_TUNNEL_HTTP;
+  // Production default: 24/7 Permanent Render Cloud Backend
+  return RENDER_CLOUD_HTTP;
 }
 
 function resolveWsUrl(): string {
@@ -37,7 +33,7 @@ function resolveWsUrl(): string {
   if (hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
     return `ws://${hostname}:8000`;
   }
-  return LIVE_TUNNEL_WS;
+  return RENDER_CLOUD_WS;
 }
 
 export const API_BASE_URL: string = resolveBaseUrl();
@@ -49,8 +45,8 @@ export const WS_BASE_URL: string = resolveWsUrl();
 export async function autoDetectHealthyBackend(): Promise<string> {
   const candidates = [
     resolveBaseUrl(),
-    LIVE_TUNNEL_HTTP,
     RENDER_CLOUD_HTTP,
+    'http://localhost:8000',
   ];
 
   for (const url of candidates) {

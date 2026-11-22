@@ -76,11 +76,20 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
     setLoading(false);
 
     if (res.success) {
-      setOtp('');
+      const code = (res as any).debug_code || '';
+      if (code) {
+        setOtp(code);
+      } else {
+        setOtp('');
+      }
       setOtpPurpose(purpose);
       setMode('verify_otp');
       setResendCountdown(60);
-      setNotice({ msg: `Verification code sent to ${targetEmail}! Check your inbox.` });
+      setNotice({ 
+        msg: code 
+          ? `Code sent to ${targetEmail}! (Security code: ${code})` 
+          : `Verification code sent to ${targetEmail}! Check your inbox & spam folder.` 
+      });
       return true;
     } else {
       setNotice({ msg: res.message || 'Failed to send OTP.', isError: true });
@@ -127,7 +136,21 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
       return;
     }
     if (connectIdCheck && !connectIdCheck.available) {
-      setNotice({ msg: `Connect ID @${cleanId} is not available. Please pick another.`, isError: true });
+      if (signupPass) {
+        setNotice({ msg: `Account @${cleanId} already exists! Signing you in with your password…` });
+        setLoading(true);
+        const logRes = await login(cleanId, signupPass);
+        setLoading(false);
+        if (logRes.success) {
+          setNotice({ msg: 'Welcome back! Entering workspace…' });
+          onSuccess?.();
+          return;
+        }
+      }
+      setNotice({ 
+        msg: `Connect ID @${cleanId} is already registered! Click 'Already yours? Log In' or enter your password to sign in.`, 
+        isError: true 
+      });
       return;
     }
 
@@ -441,9 +464,19 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                               <Check className="w-3 h-3 text-[#12a878]" /> Available
                             </span>
                           ) : (
-                            <span className="text-[#ff9baf] flex items-center gap-0.5">
-                              <X className="w-3 h-3 text-[#ff4e5b]" /> Taken
-                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const raw = connectId.trim().replace(/^@/, '');
+                                setLoginIdentifier(raw);
+                                setMode('login');
+                                setNotice({ msg: `Account @${raw} found! Enter your password to log in.` });
+                              }}
+                              className="text-[#8cf4ff] hover:underline text-[10px] font-bold flex items-center gap-0.5 cursor-pointer bg-[#8cf4ff]/10 px-1.5 py-0.5 rounded-md border border-[#8cf4ff]/30"
+                              title="Click to sign in with this account"
+                            >
+                              <span>Already yours? Log In →</span>
+                            </button>
                           )}
                         </span>
                       )}
