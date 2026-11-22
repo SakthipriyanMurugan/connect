@@ -23,7 +23,7 @@ services:
       - key: CLOUDFLARE_D1_DATABASE_ID
         value: "6926e446-a98b-4c6f-9466-f9dc6d4966a9"
       - key: CLOUDFLARE_API_TOKEN
-        sync: false
+        value: "cfoat_aWp5oOe85ReLzUwfKPK_FcM4AJHbfxxjXVUouNP1L74.4TUmWSreK9PX1HcdtS5Aodmow05kRQF2DhBFAziJJMw"
       - key: LIVEKIT_URL
         value: "wss://connect-jflh7xn8.livekit.cloud"
       - key: LIVEKIT_API_KEY
@@ -37,7 +37,7 @@ services:
       - key: SMTP_USER
         value: "sakthihinata1205@gmail.com"
       - key: SMTP_PASSWORD
-        sync: false
+        value: "dudxopepkvpszqky"
       - key: FROM_EMAIL
         value: "sakthihinata1205@gmail.com"
       - key: FROM_NAME
