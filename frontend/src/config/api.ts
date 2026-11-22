@@ -3,20 +3,22 @@
 const isBrowser = typeof window !== 'undefined';
 const hostname = isBrowser ? window.location.hostname : 'localhost';
 
-// Clean up any stale temporary quick-tunnels from localStorage
+// Clean up any stale temporary quick-tunnels or old cloud endpoints from localStorage
 if (isBrowser) {
   try {
     const cached = window.localStorage.getItem('VERTEX_API_URL');
-    if (cached && (cached.includes('trycloudflare.com') || cached.includes('loca.lt'))) {
-      window.localStorage.removeItem('VERTEX_API_URL');
-      window.localStorage.removeItem('VERTEX_WS_URL');
+    if (cached && (cached.includes('trycloudflare.com') || cached.includes('loca.lt') || cached.includes('onrender.com'))) {
+      if (!cached.includes('labour-cannon-adequate-supplemental')) {
+        window.localStorage.removeItem('VERTEX_API_URL');
+        window.localStorage.removeItem('VERTEX_WS_URL');
+      }
     }
   } catch {}
 }
 
 // 1. High-Speed Cloudflare Live Tunnel (Active SMTP Delivery & Cloudflare D1)
-export const ACTIVE_TUNNEL_HTTP = 'https://printing-tide-tahoe-slope.trycloudflare.com';
-export const ACTIVE_TUNNEL_WS = 'wss://printing-tide-tahoe-slope.trycloudflare.com';
+export const ACTIVE_TUNNEL_HTTP = 'https://labour-cannon-adequate-supplemental.trycloudflare.com';
+export const ACTIVE_TUNNEL_WS = 'wss://labour-cannon-adequate-supplemental.trycloudflare.com';
 
 // 2. 24/7 Permanent Cloud Backend (Render Cloud Web Service)
 export const RENDER_CLOUD_HTTP = 'https://vertex-connect-backend.onrender.com';
@@ -66,7 +68,6 @@ export const WS_BASE_URL: string = resolveWsUrl();
 export async function autoDetectHealthyBackend(): Promise<string> {
   const candidates = [
     ACTIVE_TUNNEL_HTTP,
-    RENDER_CLOUD_HTTP,
     'http://localhost:8000',
   ];
 

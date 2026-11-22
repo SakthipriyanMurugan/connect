@@ -81,9 +81,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const apiFetch = async (path: string, options: RequestInit = {}) => {
     let base = localStorage.getItem('VERTEX_API_URL') || API_BASE_URL;
-    if (base.includes('trycloudflare.com') || base.includes('loca.lt')) {
-      localStorage.removeItem('VERTEX_API_URL');
-      base = API_BASE_URL;
+    if (base.includes('trycloudflare.com') || base.includes('loca.lt') || base.includes('onrender.com')) {
+      if (!base.includes('labour-cannon-adequate-supplemental')) {
+        localStorage.removeItem('VERTEX_API_URL');
+        base = API_BASE_URL;
+      }
     }
     try {
       const res = await fetch(`${base}${path}`, options);
