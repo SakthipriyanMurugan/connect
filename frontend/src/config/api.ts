@@ -14,7 +14,11 @@ if (isBrowser) {
   } catch {}
 }
 
-// 1. 24/7 Permanent Cloud Backend (Render Cloud Web Service)
+// 1. High-Speed Cloudflare Live Tunnel (Active SMTP Delivery)
+export const ACTIVE_TUNNEL_HTTP = 'https://dns-kijiji-cradle-mortgages.trycloudflare.com';
+export const ACTIVE_TUNNEL_WS = 'wss://dns-kijiji-cradle-mortgages.trycloudflare.com';
+
+// 2. 24/7 Permanent Cloud Backend (Render Cloud Web Service)
 export const RENDER_CLOUD_HTTP = 'https://vertex-connect-backend.onrender.com';
 export const RENDER_CLOUD_WS = 'wss://vertex-connect-backend.onrender.com';
 
@@ -22,7 +26,7 @@ function resolveBaseUrl(): string {
   if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL as string;
   if (isBrowser) {
     const cached = window.localStorage.getItem('VERTEX_API_URL');
-    if (cached && !cached.includes('trycloudflare.com') && !cached.includes('loca.lt')) {
+    if (cached && !cached.includes('roof-cotton')) {
       return cached;
     }
   }
@@ -32,15 +36,15 @@ function resolveBaseUrl(): string {
   if (hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
     return `http://${hostname}:8000`;
   }
-  // Production default: 24/7 Permanent Render Cloud Backend
-  return RENDER_CLOUD_HTTP;
+  // Production default: Active tunnel with direct SMTP delivery
+  return ACTIVE_TUNNEL_HTTP;
 }
 
 function resolveWsUrl(): string {
   if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL as string;
   if (isBrowser) {
     const cached = window.localStorage.getItem('VERTEX_WS_URL');
-    if (cached && !cached.includes('trycloudflare.com') && !cached.includes('loca.lt')) {
+    if (cached && !cached.includes('roof-cotton')) {
       return cached;
     }
   }
@@ -50,7 +54,7 @@ function resolveWsUrl(): string {
   if (hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
     return `ws://${hostname}:8000`;
   }
-  return RENDER_CLOUD_WS;
+  return ACTIVE_TUNNEL_WS;
 }
 
 export const API_BASE_URL: string = resolveBaseUrl();
@@ -61,7 +65,7 @@ export const WS_BASE_URL: string = resolveWsUrl();
  */
 export async function autoDetectHealthyBackend(): Promise<string> {
   const candidates = [
-    resolveBaseUrl(),
+    ACTIVE_TUNNEL_HTTP,
     RENDER_CLOUD_HTTP,
     'http://localhost:8000',
   ];
