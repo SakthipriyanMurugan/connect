@@ -312,7 +312,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                       }
                       triggerSendOtp(loginIdentifier, 'login');
                     }}
-                    className="text-[#8df0d4] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                    className="text-[#8df0d4] hover:underline font-semibold flex items-center gap-1.5 py-2 px-2 rounded-lg cursor-pointer min-h-[36px]"
                   >
                     <Mail className="w-3.5 h-3.5" />
                     <span>Email OTP Login</span>
@@ -324,7 +324,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                       setMode('forgot');
                       setNotice(null);
                     }}
-                    className="text-[#c0b6ff] hover:text-white font-medium hover:underline cursor-pointer"
+                    className="text-[#c0b6ff] hover:text-white font-medium hover:underline cursor-pointer py-2 px-2 rounded-lg min-h-[36px] flex items-center"
                   >
                     Forgot password?
                   </button>

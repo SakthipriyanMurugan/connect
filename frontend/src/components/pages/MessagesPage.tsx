@@ -125,6 +125,33 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const [friendSearchTerm, setFriendSearchTerm] = useState('');
   const [isSelectMode, setIsSelectMode] = useState(false);
   const [selectedMsgIds, setSelectedMsgIds] = useState<Set<string>>(new Set());
+  const [isAddToListModalOpen, setIsAddToListModalOpen] = useState(false);
+
+  // Muted Chats with localStorage persistence
+  const [mutedChatIds, setMutedChatIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('vertexMutedChats');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('vertexMutedChats', JSON.stringify(Array.from(mutedChatIds)));
+    } catch {}
+  }, [mutedChatIds]);
+
+  // Custom List Tags with localStorage persistence
+  const [customListTags, setCustomListTags] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem('vertexCustomListTags');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
 
   // Favourite Chats with localStorage persistence
   const [favouriteChatIds, setFavouriteChatIds] = useState<Set<string>>(() => {
@@ -1397,12 +1424,22 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     </div>
 
                     <div className="flex items-center justify-between text-xs text-slate-500 mt-1">
-                      <span className="truncate max-w-[210px]">
+                      <span className="truncate max-w-[190px]">
                         {isGroup ? f.bio : f.bio || 'Direct connection'}
                       </span>
-                      {favouriteChatIds.has(f.connection_id) && (
-                        <Heart className="w-3.5 h-3.5 text-blue-600 fill-blue-600 shrink-0" />
-                      )}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {customListTags[f.connection_id] && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-blue-50 text-blue-600 border border-blue-100">
+                            {customListTags[f.connection_id]}
+                          </span>
+                        )}
+                        {mutedChatIds.has(f.connection_id) && (
+                          <BellOff className="w-3.5 h-3.5 text-slate-400" />
+                        )}
+                        {favouriteChatIds.has(f.connection_id) && (
+                          <Heart className="w-3.5 h-3.5 text-blue-600 fill-blue-600 shrink-0" />
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1570,11 +1607,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
-                        onShowToast('Select messages enabled');
+                        setIsSelectMode(true);
+                        setSelectedMsgIds(new Set());
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
-                      <CheckSquare className="w-4 h-4 text-blue-600" />
+                      <CheckSquare className="w-4 h-4 text-slate-500" />
                       <span>Select messages</span>
                     </button>
 
@@ -1583,15 +1621,24 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
-                        setIsMuteModalOpen(true);
+                        if (mutedChatIds.has(activeFriend.connection_id)) {
+                          setMutedChatIds(prev => {
+                            const next = new Set(prev);
+                            next.delete(activeFriend.connection_id);
+                            return next;
+                          });
+                          onShowToast('Notifications unmuted');
+                        } else {
+                          setIsMuteModalOpen(true);
+                        }
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center justify-between hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center justify-between hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
                       <div className="flex items-center gap-3.5">
                         <BellOff className="w-4 h-4 text-slate-500" />
-                        <span>Mute notifications</span>
+                        <span>{mutedChatIds.has(activeFriend.connection_id) ? 'Unmute notifications' : 'Mute notifications'}</span>
                       </div>
-                      <ChevronRight className="w-4 h-4 text-slate-400" />
+                      {!mutedChatIds.has(activeFriend.connection_id) && <ChevronRight className="w-4 h-4 text-slate-400" />}
                     </button>
 
                     {/* 5. Disappearing messages */}
@@ -1601,7 +1648,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsDisappearingModalOpen(true);
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
                       <Clock className="w-4 h-4 text-slate-500" />
                       <span>Disappearing messages</span>
@@ -1614,9 +1661,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsWallpaperModalOpen(true);
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
-                      <Palette className="w-4 h-4 text-blue-600" />
+                      <Palette className="w-4 h-4 text-slate-500" />
                       <span>Chat theme</span>
                     </button>
 
@@ -1627,9 +1674,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         toggleFavouriteChat(activeFriend.connection_id);
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
-                      <Heart className={`w-4 h-4 ${favouriteChatIds.has(activeFriend.connection_id) ? 'text-blue-600 fill-blue-600' : 'text-slate-400'}`} />
+                      <Heart className={`w-4 h-4 ${favouriteChatIds.has(activeFriend.connection_id) ? 'text-blue-600 fill-blue-600' : 'text-slate-500'}`} />
                       <span>{favouriteChatIds.has(activeFriend.connection_id) ? 'Remove from favourites' : 'Add to favourites'}</span>
                     </button>
 
@@ -1638,9 +1685,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
-                        onShowToast('Chat added to custom list');
+                        setIsAddToListModalOpen(true);
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center justify-between hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center justify-between hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
                       <div className="flex items-center gap-3.5">
                         <ListFilter className="w-4 h-4 text-slate-500" />
@@ -1656,9 +1703,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         handleExportChat();
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
-                      <Download className="w-4 h-4 text-blue-600" />
+                      <Download className="w-4 h-4 text-slate-500" />
                       <span>Export chat</span>
                     </button>
 
@@ -1669,7 +1716,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setActiveFriend(null);
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
                       <XCircle className="w-4 h-4 text-slate-500" />
                       <span>Close chat</span>
@@ -1685,9 +1732,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         handleSendCallLink();
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
-                      <Link2 className="w-4 h-4 text-blue-600" />
+                      <Link2 className="w-4 h-4 text-slate-500" />
                       <span>Send call link</span>
                     </button>
 
@@ -1698,9 +1745,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         onStartCall(activeFriend.name, 'video', activeFriend.user_id, activeFriend.connect_id);
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
-                      <Users className="w-4 h-4 text-blue-600" />
+                      <Users className="w-4 h-4 text-slate-500" />
                       <span>New group call</span>
                     </button>
 
@@ -1714,7 +1761,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         onShowToast('Report submitted for safety review');
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
                       <ThumbsDown className="w-4 h-4 text-slate-500" />
                       <span>Report</span>
@@ -1727,7 +1774,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsBlockModalOpen(true);
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
                       <Ban className="w-4 h-4 text-slate-500" />
                       <span>{isBlocked ? 'Unblock' : 'Block'}</span>
@@ -1740,7 +1787,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsClearChatModalOpen(true);
                       }}
-                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
                       <MinusCircle className="w-4 h-4 text-slate-500" />
                       <span>Clear chat</span>
@@ -1794,6 +1841,74 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             </div>
           )}
 
+          {/* WhatsApp Message Selection Action Bar */}
+          {isSelectMode && (
+            <div className="h-14 px-4 bg-blue-600 text-white flex items-center justify-between shadow-md shrink-0 z-30 animate-in slide-in-from-top-2 duration-150">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsSelectMode(false);
+                    setSelectedMsgIds(new Set());
+                  }}
+                  className="p-1.5 rounded-xl hover:bg-white/20 transition-colors cursor-pointer"
+                  title="Cancel selection"
+                >
+                  <X className="w-5 h-5 text-white" />
+                </button>
+                <span className="text-sm font-bold tracking-tight">
+                  {selectedMsgIds.size} selected
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={selectedMsgIds.size === 0}
+                  onClick={() => {
+                    selectedMsgIds.forEach(id => handleToggleStar(id));
+                    onShowToast(`${selectedMsgIds.size} messages starred ⭐`);
+                    setIsSelectMode(false);
+                    setSelectedMsgIds(new Set());
+                  }}
+                  className="p-2 rounded-xl hover:bg-white/20 transition-colors disabled:opacity-40 cursor-pointer"
+                  title="Star selected"
+                >
+                  <Star className="w-4.5 h-4.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedMsgIds.size === 0}
+                  onClick={() => {
+                    const texts = messages.filter(m => selectedMsgIds.has(m.id)).map(m => m.content).filter(Boolean);
+                    navigator.clipboard.writeText(texts.join('\n'));
+                    onShowToast(`${selectedMsgIds.size} messages copied!`);
+                    setIsSelectMode(false);
+                    setSelectedMsgIds(new Set());
+                  }}
+                  className="p-2 rounded-xl hover:bg-white/20 transition-colors disabled:opacity-40 cursor-pointer"
+                  title="Copy selected"
+                >
+                  <Copy className="w-4.5 h-4.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedMsgIds.size === 0}
+                  onClick={() => {
+                    setMessages(prev => prev.filter(m => !selectedMsgIds.has(m.id)));
+                    onShowToast(`${selectedMsgIds.size} messages deleted`);
+                    setIsSelectMode(false);
+                    setSelectedMsgIds(new Set());
+                  }}
+                  className="p-2 rounded-xl hover:bg-rose-500 transition-colors disabled:opacity-40 cursor-pointer"
+                  title="Delete selected"
+                >
+                  <Trash2 className="w-4.5 h-4.5 text-rose-200 hover:text-white" />
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Messages Thread */}
           <div className="flex-1 relative flex flex-col min-h-0 overflow-hidden">
             <div
@@ -1825,12 +1940,47 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 const isImage = m.file_type?.startsWith('image/') || (m.file_name && /\.(png|jpe?g|gif|webp)$/i.test(m.file_name));
                 const isAudio = m.file_type?.startsWith('audio/') || (m.file_name && /\.(webm|mp3|wav|ogg)$/i.test(m.file_name)) || m.content === '🎤 Voice note';
                 const isStarred = starredMessageIds.has(m.id);
+                const isSelected = selectedMsgIds.has(m.id);
 
                 return (
                   <div
                     key={m.id}
-                    className={`group relative flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-full`}
+                    className={`group relative flex items-center gap-3 w-full ${isMe ? 'justify-end' : 'justify-start'}`}
                   >
+                    {isSelectMode && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedMsgIds(prev => {
+                            const next = new Set(prev);
+                            if (next.has(m.id)) next.delete(m.id);
+                            else next.add(m.id);
+                            return next;
+                          });
+                        }}
+                        className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 transition-colors cursor-pointer ${
+                          isSelected
+                            ? 'bg-blue-600 border-blue-600 text-white'
+                            : 'border-slate-300 bg-white hover:border-blue-500'
+                        }`}
+                      >
+                        {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                      </button>
+                    )}
+
+                    <div
+                      className={`relative flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[85%] md:max-w-[70%]`}
+                      onClick={() => {
+                        if (isSelectMode) {
+                          setSelectedMsgIds(prev => {
+                            const next = new Set(prev);
+                            if (next.has(m.id)) next.delete(m.id);
+                            else next.add(m.id);
+                            return next;
+                          });
+                        }
+                      }}
+                    >
                     {/* Floating Reaction & Action Bar */}
                     <div
                       className={`opacity-0 group-hover:opacity-100 transition-opacity absolute -top-8 flex items-center gap-1 bg-white/95 backdrop-blur-md px-2 py-0.5 rounded-full border border-slate-200 shadow-lg z-20 ${
@@ -1999,7 +2149,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       )}
                     </div>
                   </div>
-                );
+                </div>
+              );
               })
             )}
             {/* Animated In-Stream Typing Bubble */}
@@ -2571,6 +2722,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               <button
                 type="button"
                 onClick={() => {
+                  if (activeFriend) {
+                    setMutedChatIds(prev => {
+                      const next = new Set(prev);
+                      next.add(activeFriend.connection_id);
+                      return next;
+                    });
+                  }
                   setIsMuted(true);
                   setIsMuteModalOpen(false);
                   onShowToast('Notifications muted');
@@ -2578,6 +2736,72 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 className="px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/20 cursor-pointer"
               >
                 Mute
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Add to Custom List */}
+      {isAddToListModalOpen && activeFriend && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                <ListFilter className="w-4 h-4 text-blue-600" />
+                <span>Add to custom list</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsAddToListModalOpen(false)}
+                className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              Organize your chats with tags. Select a custom list for <b>{activeFriend.name}</b>:
+            </p>
+
+            <div className="space-y-2">
+              {['Work', 'Favourites', 'Family', 'Projects', 'VIP'].map((listName) => {
+                const isCurrent = customListTags[activeFriend.connection_id] === listName;
+                return (
+                  <button
+                    key={listName}
+                    type="button"
+                    onClick={() => {
+                      setCustomListTags(prev => {
+                        const updated = { ...prev, [activeFriend.connection_id]: listName };
+                        try {
+                          localStorage.setItem('vertexCustomListTags', JSON.stringify(updated));
+                        } catch {}
+                        return updated;
+                      });
+                      setIsAddToListModalOpen(false);
+                      onShowToast(`Chat added to "${listName}" list!`);
+                    }}
+                    className={`w-full px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-between border transition-all cursor-pointer ${
+                      isCurrent
+                        ? 'bg-blue-50 border-blue-300 text-blue-700'
+                        : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <span>{listName}</span>
+                    {isCurrent && <Check className="w-4 h-4 text-blue-600" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setIsAddToListModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                Close
               </button>
             </div>
           </div>
