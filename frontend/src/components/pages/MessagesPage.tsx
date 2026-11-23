@@ -293,6 +293,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     };
 
     fetchMessages();
+
+    // Auto-poll every 2.5s so messages sync in real-time 24/7 even in serverless mode
+    const pollInterval = setInterval(fetchMessages, 2500);
+    return () => clearInterval(pollInterval);
   }, [activeFriend]);
 
   // 4. Search Users by Connect ID or Name
