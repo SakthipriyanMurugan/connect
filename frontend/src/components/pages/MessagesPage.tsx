@@ -42,6 +42,7 @@ import {
   Shield,
   Music,
   ChevronRight,
+  ChevronDown,
   Info,
   CheckSquare,
   ListFilter,
@@ -189,6 +190,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatScrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldInstantScrollRef = useRef<boolean>(true);
+  const isNearBottomRef = useRef<boolean>(true);
+  const userSentMessageRef = useRef<boolean>(false);
+  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const activeFriendRef = useRef<ConnectionUser | null>(activeFriend);
@@ -198,22 +202,66 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   useEffect(() => {
     activeFriendRef.current = activeFriend;
     shouldInstantScrollRef.current = true;
+    isNearBottomRef.current = true;
+    setShowScrollBottomBtn(false);
   }, [activeFriend]);
 
-  // Scroll to bottom of chat without sliding from top when entering chat
-  const scrollToBottom = (instant = false) => {
+  // WhatsApp-style scroll listener: Detects if user scrolled up to read history
+  const handleScroll = () => {
+    const el = chatScrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const isNear = distanceFromBottom < 120;
+    isNearBottomRef.current = isNear;
+    setShowScrollBottomBtn(!isNear);
+  };
+
+  // WhatsApp-style quick scroll-to-bottom action
+  const handleScrollToBottom = () => {
     if (chatScrollContainerRef.current) {
-      if (instant || shouldInstantScrollRef.current) {
-        chatScrollContainerRef.current.scrollTop = chatScrollContainerRef.current.scrollHeight;
-        shouldInstantScrollRef.current = false;
-      } else {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }
+      chatScrollContainerRef.current.scrollTo({
+        top: chatScrollContainerRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+      isNearBottomRef.current = true;
+      setShowScrollBottomBtn(false);
     }
   };
 
+  // Smart auto-scroll: preserves user's position when reading past messages
   useEffect(() => {
-    scrollToBottom(shouldInstantScrollRef.current);
+    if (!chatScrollContainerRef.current) return;
+
+    // 1. Initial chat load or switched chat -> snap instant to bottom without animation
+    if (shouldInstantScrollRef.current) {
+      chatScrollContainerRef.current.scrollTop = chatScrollContainerRef.current.scrollHeight;
+      shouldInstantScrollRef.current = false;
+      isNearBottomRef.current = true;
+      setShowScrollBottomBtn(false);
+      return;
+    }
+
+    // 2. User explicitly sent a message (text / voice / file) -> smooth scroll to bottom
+    if (userSentMessageRef.current) {
+      userSentMessageRef.current = false;
+      chatScrollContainerRef.current.scrollTo({
+        top: chatScrollContainerRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+      isNearBottomRef.current = true;
+      setShowScrollBottomBtn(false);
+      return;
+    }
+
+    // 3. New incoming message arrived (from polling or websocket):
+    // Only scroll to bottom IF user is already near the bottom!
+    // If the user scrolled up to read previous messages, DO NOT pull them down!
+    if (isNearBottomRef.current) {
+      chatScrollContainerRef.current.scrollTo({
+        top: chatScrollContainerRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
   }, [messages]);
 
   // 1. Fetch user's friends and pending requests from Backend (Isolated per user)
@@ -395,7 +443,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       if (activeFriend.connection_id.startsWith('group_')) {
         try {
           const stored = JSON.parse(localStorage.getItem(`vertex_group_msgs_${activeFriend.connection_id}`) || '[]');
-          setMessages(stored);
+          setMessages((prev) => {
+            if (prev.length === stored.length) {
+              let changed = false;
+              for (let i = 0; i < prev.length; i++) {
+                if (prev[i].id !== stored[i].id || JSON.stringify(prev[i].reactions) !== JSON.stringify(stored[i].reactions)) {
+                  changed = true;
+                  break;
+                }
+              }
+              if (!changed) return prev;
+            }
+            return stored;
+          });
         } catch {
           setMessages([]);
         }
@@ -406,7 +466,24 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         const res = await fetch(`${API_BASE_URL}/api/v1/messages/${activeFriend.conversation_id}`);
         if (res.ok) {
           const data: ChatMessage[] = await res.json();
-          setMessages(data);
+          setMessages((prev) => {
+            if (prev.length === data.length) {
+              let changed = false;
+              for (let i = 0; i < prev.length; i++) {
+                if (
+                  prev[i].id !== data[i].id ||
+                  prev[i].status !== data[i].status ||
+                  prev[i].is_read !== data[i].is_read ||
+                  JSON.stringify(prev[i].reactions) !== JSON.stringify(data[i].reactions)
+                ) {
+                  changed = true;
+                  break;
+                }
+              }
+              if (!changed) return prev;
+            }
+            return data;
+          });
 
           // Mark unread messages as read instantly over WebSocket
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && activeFriend?.conversation_id) {
@@ -555,6 +632,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     e.preventDefault();
     if (!inputMessage.trim() || !user || !activeFriend) return;
 
+    userSentMessageRef.current = true;
     const messageContent = inputMessage.trim();
     const tempId = `temp_${Date.now()}`;
     const replySnippet = replyingTo ? `${replyingTo.sender_name}: ${replyingTo.content.slice(0, 60)}` : undefined;
@@ -756,6 +834,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           });
 
           if (sendRes.ok) {
+            userSentMessageRef.current = true;
             const sent = await sendRes.json();
             setMessages((prev) => [...prev, { ...sent.message, is_me: true }]);
             onShowToast('Voice note sent!');
@@ -836,6 +915,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         });
 
         if (sendRes.ok) {
+          userSentMessageRef.current = true;
           const sent = await sendRes.json();
           setMessages((prev) => [...prev, sent.message]);
           onShowToast(`File ${file.name} sent successfully!`);
@@ -1704,11 +1784,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             </div>
           )}
 
-          {/* Messages Thread (Snaps immediately to bottom without sliding from top) */}
-          <div
-            ref={chatScrollContainerRef}
-            className={`flex-1 overflow-y-auto p-4 md:p-6 space-y-3.5 transition-colors ${WALLPAPER_CLASSES[chatWallpaper] || ''}`}
-          >
+          {/* Messages Thread */}
+          <div className="flex-1 relative flex flex-col min-h-0 overflow-hidden">
+            <div
+              ref={chatScrollContainerRef}
+              onScroll={handleScroll}
+              className={`flex-1 overflow-y-auto p-4 md:p-6 space-y-3.5 transition-colors ${WALLPAPER_CLASSES[chatWallpaper] || ''}`}
+            >
             <div className="text-center">
               <span className="text-[10px] uppercase font-bold text-slate-500 bg-white/90 backdrop-blur-sm px-3.5 py-1 rounded-full border border-slate-200 shadow-xs">
                 End-to-End Encrypted Channel • @{activeFriend.connect_id}
@@ -1924,6 +2006,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             )}
             <div ref={messagesEndRef} />
           </div>
+
+          {/* WhatsApp-Style Floating Scroll-To-Bottom Button */}
+          {showScrollBottomBtn && (
+            <button
+              type="button"
+              onClick={handleScrollToBottom}
+              title="Scroll to bottom"
+              className="absolute right-5 bottom-4 w-9 h-9 rounded-full bg-white text-slate-700 hover:text-blue-600 shadow-md hover:shadow-lg border border-slate-200/90 flex items-center justify-center transition-all duration-200 hover:scale-110 z-20 cursor-pointer animate-in fade-in zoom-in-90"
+            >
+              <ChevronDown className="w-5 h-5" />
+            </button>
+          )}
+        </div>
 
           {/* Replying Banner (if user clicked reply on any message) */}
           {replyingTo && (
