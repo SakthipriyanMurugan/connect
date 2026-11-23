@@ -259,11 +259,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-[#dce0f7] mb-1">
+                  <label htmlFor="login-identifier" className="block text-[11px] font-semibold text-[#dce0f7] mb-1">
                     Connect ID or Email
                   </label>
                   <div className="relative">
                     <input
+                      id="login-identifier"
+                      name="loginIdentifier"
+                      aria-label="Connect ID or Email"
                       type="text"
                       value={loginIdentifier}
                       onChange={(e) => setLoginIdentifier(e.target.value)}
@@ -275,9 +278,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Password</label>
+                  <label htmlFor="login-password" className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Password</label>
                   <div className="relative">
                     <input
+                      id="login-password"
+                      name="password"
+                      aria-label="Password"
                       type={showPass ? 'text' : 'password'}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -286,8 +292,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                     />
                     <button
                       type="button"
+                      aria-label={showPass ? 'Hide password' : 'Show password'}
                       onClick={() => setShowPass(!showPass)}
-                      className="absolute right-2 top-2 p-1 text-[#aeb7da] hover:text-white text-xs font-semibold rounded"
+                      className="absolute right-2 top-2 p-1 text-[#aeb7da] hover:text-white text-xs font-semibold rounded cursor-pointer"
                     >
                       {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
@@ -297,6 +304,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                 <div className="flex items-center justify-between text-xs text-[#aeb6d6] pt-1">
                   <button
                     type="button"
+                    aria-label="Sign in using Email OTP"
                     onClick={() => {
                       if (!loginIdentifier.includes('@')) {
                         setNotice({ msg: 'Enter your email address to receive an OTP.', isError: true });
@@ -304,18 +312,19 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                       }
                       triggerSendOtp(loginIdentifier, 'login');
                     }}
-                    className="text-[#8df0d4] hover:underline font-semibold flex items-center gap-1"
+                    className="text-[#8df0d4] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
                   >
                     <Mail className="w-3.5 h-3.5" />
                     <span>Email OTP Login</span>
                   </button>
                   <button
                     type="button"
+                    aria-label="Forgot password"
                     onClick={() => {
                       setMode('forgot');
                       setNotice(null);
                     }}
-                    className="text-[#c0b6ff] hover:text-white font-medium hover:underline"
+                    className="text-[#c0b6ff] hover:text-white font-medium hover:underline cursor-pointer"
                   >
                     Forgot password?
                   </button>
@@ -323,6 +332,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
 
                 <button
                   type="submit"
+                  aria-label="Sign in to your account"
                   disabled={loading}
                   className="w-full h-10 rounded-xl font-bold text-xs text-[#111432] bg-gradient-to-r from-[#b8adff] via-[#86e7f2] to-[#d2b4ff] hover:brightness-110 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-[#86e7f2]/20 cursor-pointer disabled:opacity-70"
                 >
@@ -340,11 +350,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                   New to Vertex?{' '}
                   <button
                     type="button"
+                    aria-label="Create an account"
                     onClick={() => {
                       setMode('signup');
                       setNotice(null);
                     }}
-                    className="text-[#c5baff] font-bold hover:underline ml-1"
+                    className="text-[#c5baff] font-bold hover:underline ml-1 cursor-pointer"
                   >
                     Create an account
                   </button>
@@ -371,7 +382,13 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                   </div>
 
                   <div>
+                    <label htmlFor="otp-input" className="block text-[11px] font-semibold text-[#8df0d4] mb-1">
+                      6-digit Verification Code
+                    </label>
                     <input
+                      id="otp-input"
+                      name="otp"
+                      aria-label="6-digit verification code"
                       type="text"
                       maxLength={6}
                       value={otp}
@@ -384,6 +401,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
 
                   <button
                     type="submit"
+                    aria-label="Verify security code and enter workspace"
                     disabled={loading || otp.length < 6}
                     className="w-full h-10 rounded-xl font-bold text-xs text-[#111432] bg-gradient-to-r from-[#8df0d4] via-[#86e7f2] to-[#b8adff] hover:brightness-110 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-[#8df0d4]/20 cursor-pointer disabled:opacity-50"
                   >
@@ -394,21 +412,23 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                   <div className="flex items-center justify-between text-xs text-[#aeb6d6] pt-1">
                     <button
                       type="button"
+                      aria-label="Resend verification code"
                       disabled={resendCountdown > 0 || loading}
                       onClick={() => triggerSendOtp(email, otpPurpose)}
-                      className="text-[#c0b6ff] hover:text-white font-semibold disabled:opacity-50 flex items-center gap-1"
+                      className="text-[#c0b6ff] hover:text-white font-semibold disabled:opacity-50 flex items-center gap-1 cursor-pointer"
                     >
                       <RotateCcw className="w-3 h-3" />
                       <span>{resendCountdown > 0 ? `Resend code in ${resendCountdown}s` : 'Resend code'}</span>
                     </button>
                     <button
                       type="button"
+                      aria-label="Back to edit form"
                       onClick={() => {
                         setOtp('');
                         setMode(otpPurpose === 'reset' ? 'forgot' : 'signup');
                         setNotice(null);
                       }}
-                      className="text-[#9fa9ce] hover:underline"
+                      className="text-[#9fa9ce] hover:underline cursor-pointer"
                     >
                       Back to edit
                     </button>
@@ -430,8 +450,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Full name</label>
+                    <label htmlFor="signup-name" className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Full name</label>
                     <input
+                      id="signup-name"
+                      name="name"
+                      aria-label="Full name"
                       type="text"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
@@ -443,7 +466,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                   {/* Connect ID Input with Live Check */}
                   <div>
                     <div className="flex items-center justify-between mb-1">
-                      <label className="text-[11px] font-semibold text-[#dce0f7]">
+                      <label htmlFor="signup-connect-id" className="text-[11px] font-semibold text-[#dce0f7]">
                         Connect ID (Unique Handle)
                       </label>
                       {connectIdCheck && (
@@ -477,6 +500,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                     <div className="relative">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-[#8ce7f2]">@</span>
                       <input
+                        id="signup-connect-id"
+                        name="connectId"
+                        aria-label="Connect ID unique handle"
                         type="text"
                         value={connectId}
                         onChange={(e) => setConnectId(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
@@ -496,8 +522,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Email address</label>
+                    <label htmlFor="signup-email" className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Email address</label>
                     <input
+                      id="signup-email"
+                      name="email"
+                      aria-label="Email address"
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
@@ -508,8 +537,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
 
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Password</label>
+                      <label htmlFor="signup-pass" className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Password</label>
                       <input
+                        id="signup-pass"
+                        name="signupPass"
+                        aria-label="Password (min 8 characters)"
                         type={showPass ? 'text' : 'password'}
                         value={signupPass}
                         onChange={(e) => setSignupPass(e.target.value)}
@@ -518,8 +550,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                       />
                     </div>
                     <div>
-                      <label className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Confirm</label>
+                      <label htmlFor="signup-conf-pass" className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Confirm</label>
                       <input
+                        id="signup-conf-pass"
+                        name="signupConf"
+                        aria-label="Confirm password"
                         type={showConfPass ? 'text' : 'password'}
                         value={signupConf}
                         onChange={(e) => setSignupConf(e.target.value)}
@@ -588,8 +623,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Email address</label>
+                    <label htmlFor="forgot-email" className="block text-[11px] font-semibold text-[#dce0f7] mb-1">Email address</label>
                     <input
+                      id="forgot-email"
+                      name="forgotEmail"
+                      aria-label="Registered email address"
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
@@ -600,6 +638,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
 
                   <button
                     type="submit"
+                    aria-label="Send password reset code"
                     disabled={loading}
                     className="w-full h-10 rounded-xl font-bold text-xs text-[#111432] bg-gradient-to-r from-[#b8adff] via-[#86e7f2] to-[#d2b4ff] hover:brightness-110 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 shadow-lg cursor-pointer"
                   >

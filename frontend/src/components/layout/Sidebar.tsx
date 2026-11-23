@@ -32,13 +32,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
       {/* Top Section: Vertex Brand Logo & Navigation Icons */}
       <div className="flex flex-col items-center gap-3 w-full">
         {/* Sleek Vertex Blue Logo Mark */}
-        <div 
+        <button 
+          type="button"
+          aria-label="Vertex Connect - Go to Chats"
           onClick={() => onPageChange('messages')}
-          className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-black text-lg shadow-md shadow-blue-500/25 cursor-pointer hover:scale-105 transition-transform mb-2"
+          className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-black text-lg shadow-md shadow-blue-500/25 cursor-pointer hover:scale-105 transition-transform mb-2 border-none"
           title="Vertex Connect"
         >
           V
-        </div>
+        </button>
 
         {topDockItems.map((item) => {
           const Icon = item.icon;
@@ -47,6 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
             <div key={item.id} className="relative group flex items-center justify-center w-full">
               <button
                 type="button"
+                aria-label={item.label}
                 onClick={() => onPageChange(item.id)}
                 className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-all cursor-pointer relative ${
                   isActive
@@ -86,6 +89,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
         <div className="relative group flex items-center justify-center w-full">
           <button
             type="button"
+            aria-label="Settings"
             onClick={() => onPageChange('settings')}
             className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
               currentPage === 'settings'
@@ -105,6 +109,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
         <div className="relative group flex items-center justify-center w-full">
           <button
             type="button"
+            aria-label={`Profile: ${user?.name || 'User'} (@${user?.connect_id || ''})`}
             onClick={() => onPageChange('settings')}
             className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-bold text-xs ring-2 ring-slate-100 hover:ring-blue-500 transition-all cursor-pointer shadow-sm"
             title={user?.name || 'Profile'}
@@ -130,7 +135,7 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({ currentPage, onPageCha
   ];
 
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/80 flex items-center justify-around px-2 py-1.5 shadow-xl">
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/80 flex items-center justify-around px-2 py-1.5 shadow-xl" aria-label="Mobile Navigation">
       {mobileNavItems.map((item) => {
         const Icon = item.icon;
         const isActive = currentPage === item.id;
@@ -138,6 +143,7 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({ currentPage, onPageCha
           <button
             key={item.id}
             type="button"
+            aria-label={item.label}
             onClick={() => onPageChange(item.id)}
             className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all relative cursor-pointer ${
               isActive

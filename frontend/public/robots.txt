@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://vertex-connect.pages.dev/sitemap.xml

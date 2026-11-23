@@ -58,6 +58,7 @@ export const Topbar: React.FC<TopbarProps> = ({
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           placeholder="Search... (Ctrl + K)"
+          aria-label="Search messages, calls, and files"
           className="w-full pl-9 md:pl-11 pr-8 md:pr-14 py-2 md:py-2.5 rounded-xl border border-[#cbd5ff]/60 dark:border-white/10 bg-white/80 dark:bg-white/5 text-xs text-[#182044] dark:text-[#eef1ff] placeholder-[#71809a] dark:placeholder-[#8898b3] focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20 shadow-inner transition-all"
         />
         <span className="hidden md:inline-block absolute right-3.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-[#8b98b0] bg-[#eef2fc] dark:bg-white/10 px-1.5 py-0.5 rounded border border-black/5 dark:border-white/10">
@@ -71,6 +72,7 @@ export const Topbar: React.FC<TopbarProps> = ({
         <button
           type="button"
           onClick={() => setIsCustomizerOpen(true)}
+          aria-label="Customize appearance"
           title="Customize appearance"
           className="w-10 h-10 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 border border-[#d7ddf7] dark:border-white/10 text-[#40516c] dark:text-[#cbd4ff] hover:text-[var(--accent)] hover:shadow-md hover:-translate-y-0.5 transition-all cursor-pointer"
         >
@@ -81,6 +83,7 @@ export const Topbar: React.FC<TopbarProps> = ({
         <button
           type="button"
           onClick={() => onShowNotificationToast("You're all caught up! No unread system alerts.")}
+          aria-label="Notifications"
           title="Notifications"
           className="w-10 h-10 rounded-xl relative flex items-center justify-center bg-white/80 dark:bg-white/10 border border-[#d7ddf7] dark:border-white/10 text-[#40516c] dark:text-[#cbd4ff] hover:text-[var(--accent)] hover:shadow-md hover:-translate-y-0.5 transition-all cursor-pointer"
         >
@@ -93,6 +96,7 @@ export const Topbar: React.FC<TopbarProps> = ({
           <button
             type="button"
             onClick={() => setProfileOpen(!profileOpen)}
+            aria-label="Open profile options menu"
             className="flex items-center gap-2.5 p-1 rounded-xl hover:bg-white/40 dark:hover:bg-white/5 transition-all cursor-pointer text-left"
           >
             <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#a6f5ff] via-[#aab5ff] to-[#edbaff] flex items-center justify-center font-bold text-xs text-[#26305f] shadow-md border-2 border-white dark:border-white/20 shrink-0">

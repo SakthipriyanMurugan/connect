@@ -1,0 +1,20 @@
+{
+  "name": "Vertex Connect",
+  "short_name": "VertexConnect",
+  "description": "Enterprise-grade real-time business communication and collaboration platform.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "categories": ["business", "productivity", "social"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

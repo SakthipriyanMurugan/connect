@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { PhoneOff } from 'lucide-react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
+import { PhoneOff, Loader2 } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppearanceProvider } from './context/AppearanceContext';
 import { AuthPage } from './components/auth/AuthPage';
@@ -7,19 +7,31 @@ import { Sidebar, MobileBottomNav, NavPage } from './components/layout/Sidebar';
 import { Topbar } from './components/layout/Topbar';
 import { CustomizerDrawer } from './components/layout/CustomizerDrawer';
 import { CallBar } from './components/calling/CallBar';
-import { CallModal, ActiveCallSession, CallEndStats } from './components/calling/CallModal';
+import type { ActiveCallSession, CallEndStats } from './components/calling/CallModal';
 import { IncomingCallModal, IncomingCallData } from './components/calling/IncomingCallModal';
-import { MeetingIntelligenceModal } from './components/calling/MeetingIntelligenceModal';
 import type { MeetingIntelligenceReport } from './types';
 import { API_BASE_URL, WS_BASE_URL } from './config/api';
 import { stopOutgoingRingtone, stopRingtone } from './services/livekit';
-import { MessagesPage } from './components/pages/MessagesPage';
-import { MeetingsPage } from './components/pages/MeetingsPage';
-import { IntelligencePage } from './components/pages/IntelligencePage';
-import { TeamsPage } from './components/pages/TeamsPage';
-import { FilesPage } from './components/pages/FilesPage';
-import { AnalyticsPage } from './components/pages/AnalyticsPage';
-import { SettingsPage } from './components/pages/SettingsPage';
+
+// Code-split pages for sub-second initial load & 100 Performance on Lighthouse
+const MessagesPage = lazy(() => import('./components/pages/MessagesPage').then(m => ({ default: m.MessagesPage })));
+const MeetingsPage = lazy(() => import('./components/pages/MeetingsPage').then(m => ({ default: m.MeetingsPage })));
+const IntelligencePage = lazy(() => import('./components/pages/IntelligencePage').then(m => ({ default: m.IntelligencePage })));
+const TeamsPage = lazy(() => import('./components/pages/TeamsPage').then(m => ({ default: m.TeamsPage })));
+const FilesPage = lazy(() => import('./components/pages/FilesPage').then(m => ({ default: m.FilesPage })));
+const AnalyticsPage = lazy(() => import('./components/pages/AnalyticsPage').then(m => ({ default: m.AnalyticsPage })));
+const SettingsPage = lazy(() => import('./components/pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
+const CallModal = lazy(() => import('./components/calling/CallModal').then(m => ({ default: m.CallModal })));
+const MeetingIntelligenceModal = lazy(() => import('./components/calling/MeetingIntelligenceModal').then(m => ({ default: m.MeetingIntelligenceModal })));
+
+const PageLoaderFallback = () => (
+  <div className="flex-1 h-full min-h-[300px] flex items-center justify-center text-slate-400">
+    <div className="flex flex-col items-center gap-2">
+      <Loader2 className="w-6 h-6 text-blue-600 animate-spin" />
+      <span className="text-xs text-slate-500 font-medium">Loading workspace…</span>
+    </div>
+  </div>
+);
 
 const MainLayout: React.FC = () => {
   const { user, isAuthenticated } = useAuth();
@@ -386,27 +398,29 @@ const MainLayout: React.FC = () => {
         )}
 
         <main className={`flex-1 w-full h-full overflow-hidden ${currentPage === 'messages' ? 'p-0' : 'p-2 sm:p-5 md:p-8 max-w-[1600px] mx-auto overflow-y-auto'}`}>
-          {currentPage === 'messages' && (
-            <MessagesPage
-              onStartCall={(name, callType, targetUserId, targetConnectId) =>
-                handleStartCall(name, callType || 'video', targetUserId, targetConnectId)
-              }
-              onShowToast={showToast}
-            />
-          )}
-          {currentPage === 'meetings' && (
-            <MeetingsPage
-              onStartCall={(title, roomName) =>
-                handleStartCall(title, 'video', undefined, undefined, roomName)
-              }
-              onShowToast={showToast}
-            />
-          )}
-          {currentPage === 'intelligence' && <IntelligencePage onShowToast={showToast} />}
-          {currentPage === 'teams' && <TeamsPage onShowToast={showToast} />}
-          {currentPage === 'files' && <FilesPage onShowToast={showToast} />}
-          {currentPage === 'analytics' && <AnalyticsPage />}
-          {currentPage === 'settings' && <SettingsPage onShowToast={showToast} />}
+          <Suspense fallback={<PageLoaderFallback />}>
+            {currentPage === 'messages' && (
+              <MessagesPage
+                onStartCall={(name, callType, targetUserId, targetConnectId) =>
+                  handleStartCall(name, callType || 'video', targetUserId, targetConnectId)
+                }
+                onShowToast={showToast}
+              />
+            )}
+            {currentPage === 'meetings' && (
+              <MeetingsPage
+                onStartCall={(title, roomName) =>
+                  handleStartCall(title, 'video', undefined, undefined, roomName)
+                }
+                onShowToast={showToast}
+              />
+            )}
+            {currentPage === 'intelligence' && <IntelligencePage onShowToast={showToast} />}
+            {currentPage === 'teams' && <TeamsPage onShowToast={showToast} />}
+            {currentPage === 'files' && <FilesPage onShowToast={showToast} />}
+            {currentPage === 'analytics' && <AnalyticsPage />}
+            {currentPage === 'settings' && <SettingsPage onShowToast={showToast} />}
+          </Suspense>
         </main>
       </div>
 
@@ -419,20 +433,31 @@ const MainLayout: React.FC = () => {
       {/* Slide-out Customizer Drawer */}
       <CustomizerDrawer />
 
-      {/* Live Video / Audio Call Modal (LiveKit WebRTC Cloud) */}
-      {activeCallSession && !isCallMinimized && (
-        <CallModal
-          session={activeCallSession}
-          currentUser={{
-            id: user?.id || 'anon',
-            name: user?.name || 'You',
-            connect_id: user?.connect_id,
-          }}
-          onEndCall={handleEndCall}
-          onMinimize={() => setIsCallMinimized(true)}
-          onShowToast={showToast}
-        />
-      )}
+      <Suspense fallback={null}>
+        {/* Live Video / Audio Call Modal (LiveKit WebRTC Cloud) */}
+        {activeCallSession && !isCallMinimized && (
+          <CallModal
+            session={activeCallSession}
+            currentUser={{
+              id: user?.id || 'anon',
+              name: user?.name || 'You',
+              connect_id: user?.connect_id,
+            }}
+            onEndCall={handleEndCall}
+            onMinimize={() => setIsCallMinimized(true)}
+            onShowToast={showToast}
+          />
+        )}
+
+        {/* AI Meeting Intelligence Scorecard & Summary Modal */}
+        {intelligenceReport && (
+          <MeetingIntelligenceModal
+            report={intelligenceReport}
+            onClose={() => setIntelligenceReport(null)}
+            onShowToast={showToast}
+          />
+        )}
+      </Suspense>
 
       {/* Persistent Floating CallBar (when minimized) */}
       {activeCallSession && isCallMinimized && (
@@ -453,14 +478,7 @@ const MainLayout: React.FC = () => {
         />
       )}
 
-      {/* AI Meeting Intelligence Scorecard & Summary Modal */}
-      {intelligenceReport && (
-        <MeetingIntelligenceModal
-          report={intelligenceReport}
-          onClose={() => setIntelligenceReport(null)}
-          onShowToast={showToast}
-        />
-      )}
+
 
       {/* Offline Teammate Notification & Animation Modal */}
       {offlineCallModal.isOpen && (
