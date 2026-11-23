@@ -70,9 +70,9 @@ const MainLayout: React.FC = () => {
     }, 3000);
   };
 
-  // Connect global WebSocket for call invites & signaling
+  // Connect global WebSocket for call invites & signaling (when WS server is active)
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id || !WS_BASE_URL) return;
 
     let ws: WebSocket | null = null;
     let reconnectTimeout: any = null;

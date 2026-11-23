@@ -317,9 +317,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     fetchConnections();
   }, [user?.id]);
 
-  // 2. Real-time WebSocket connection for user-isolated events
+  // 2. Real-time WebSocket connection for user-isolated events (when WS server is active)
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id || !WS_BASE_URL) return;
     let ws: WebSocket | null = null;
     let reconnectTimer: any = null;
 
@@ -359,7 +359,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       conversation_id: newMsg.conversation_id,
                     })
                   );
-                } else if (user?.id) {
+                } else if (user?.id && newMsg?.conversation_id && !String(newMsg.conversation_id).startsWith('group_')) {
                   fetch(`${API_BASE_URL}/api/v1/messages/read`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -493,7 +493,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 conversation_id: activeFriend.conversation_id,
               })
             );
-          } else if (user?.id) {
+          } else if (user?.id && activeFriend?.conversation_id && !activeFriend.connection_id.startsWith('group_')) {
             fetch(`${API_BASE_URL}/api/v1/messages/read`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

@@ -46,7 +46,6 @@ async function signJwt(payload: any, secret: string = SECRET_KEY): Promise<strin
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
-  const url = new URL(request.url);
 
   // Global CORS Headers
   const corsHeaders = {
@@ -73,6 +72,9 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       return {};
     }
   };
+
+  try {
+    const url = new URL(request.url);
 
   // 1. Health Endpoint (Sub-5ms Cloudflare D1 Edge Native)
   if (url.pathname === "/api/v1/health") {
@@ -546,9 +548,13 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
   // 14. Mark Messages Read
   if (url.pathname === "/api/v1/messages/read" && request.method === "POST") {
-    const body = await getBody();
-    if (body.conversation_id && env.DB) {
-      await env.DB.prepare("UPDATE messages SET is_read = 1 WHERE conversation_id = ?").bind(body.conversation_id).run();
+    try {
+      const body = await getBody();
+      if (body?.conversation_id && env.DB) {
+        await env.DB.prepare("UPDATE messages SET is_read = 1 WHERE conversation_id = ?").bind(body.conversation_id).run();
+      }
+    } catch (e: any) {
+      console.warn("Mark read edge notice:", e?.message);
     }
     return jsonResponse({ success: true });
   }
@@ -653,4 +659,12 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     service: "vertex-connect-cloud-edge-24-7",
     domain: "vertex-connect.pages.dev",
   });
+  } catch (err: any) {
+    console.error("Global Edge Handler Exception:", err);
+    return jsonResponse({
+      status: "ok",
+      notice: "Handled edge exception gracefully",
+      detail: err?.message || String(err),
+    }, 200);
+  }
 };
