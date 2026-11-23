@@ -39,10 +39,6 @@
     <link rel="apple-touch-icon" href="/favicon.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
 
-    <!-- Performance Preconnects -->
-    <link rel="preconnect" href="https://vertex-connect-backend.koyeb.app" crossorigin />
-    <link rel="dns-prefetch" href="https://vertex-connect-backend.koyeb.app" />
-
     <!-- JSON-LD Structured Data for Search Engines -->
     <script type="application/ld+json">
     {
@@ -56,14 +52,22 @@
     }
     </script>
   </head>
-  <body>
+  <body style="margin:0;background:#090d25;color:#eef1ff;">
     <noscript>
-      <div style="padding: 2rem; font-family: sans-serif; text-align: center; color: #1e293b;">
+      <div style="padding: 2rem; font-family: sans-serif; text-align: center; color: #1e293b; background: #fff;">
         <h2>JavaScript Required</h2>
         <p>Please enable JavaScript in your browser to experience Vertex Connect.</p>
       </div>
     </noscript>
-    <div id="root"></div>
+    <div id="root">
+      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#090d25;color:#ffffff;font-family:Inter,system-ui,-apple-system,sans-serif">
+        <div style="text-align:center;padding:20px">
+          <div style="width:48px;height:48px;margin:0 auto 16px;border-radius:14px;background:linear-gradient(135deg,#3b82f6,#2563eb);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:24px;box-shadow:0 8px 24px rgba(37,99,235,0.35);color:#fff">V</div>
+          <div style="font-size:16px;font-weight:700;letter-spacing:1px">VERTEX CONNECT</div>
+          <div style="font-size:11px;color:#94a3b8;margin-top:4px">Instant Executive Workspace</div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

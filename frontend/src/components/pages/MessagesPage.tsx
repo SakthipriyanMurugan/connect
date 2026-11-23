@@ -55,7 +55,7 @@ import {
   Archive
 } from 'lucide-react';
 import type { ChatMessage, ConnectionUser, SearchUserResult } from '../../types';
-import { VoiceNotePlayer } from '../chat/VoiceNotePlayer';
+import { VoiceNotePlayer, sanitizeMediaUrl } from '../chat/VoiceNotePlayer';
 import { API_BASE_URL, WS_BASE_URL } from '../../config/api';
 
 interface MessagesPageProps {
@@ -467,14 +467,24 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         if (res.ok) {
           const data: ChatMessage[] = await res.json();
           setMessages((prev) => {
-            if (prev.length === data.length) {
+            // Keep pending optimistic messages in place so message bubble NEVER vanishes while in-flight!
+            const pendingOptimistic = prev.filter(m => m.id.startsWith('temp_'));
+            const merged = [...data];
+            for (const opt of pendingOptimistic) {
+              const alreadyPresent = data.some(d => d.content === opt.content && d.sender_id === opt.sender_id);
+              if (!alreadyPresent && !merged.some(m => m.id === opt.id)) {
+                merged.push(opt);
+              }
+            }
+
+            if (prev.length === merged.length) {
               let changed = false;
               for (let i = 0; i < prev.length; i++) {
                 if (
-                  prev[i].id !== data[i].id ||
-                  prev[i].status !== data[i].status ||
-                  prev[i].is_read !== data[i].is_read ||
-                  JSON.stringify(prev[i].reactions) !== JSON.stringify(data[i].reactions)
+                  prev[i].id !== merged[i].id ||
+                  prev[i].status !== merged[i].status ||
+                  prev[i].is_read !== merged[i].is_read ||
+                  JSON.stringify(prev[i].reactions) !== JSON.stringify(merged[i].reactions)
                 ) {
                   changed = true;
                   break;
@@ -482,7 +492,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               }
               if (!changed) return prev;
             }
-            return data;
+            return merged;
           });
 
           // Mark unread messages as read instantly over WebSocket
@@ -731,7 +741,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         const data = await res.json();
         // Replace temporary client message with server persisted record
         setMessages((prev) =>
-          prev.map((m) => (m.id === tempId ? { ...data.message, is_me: true } : m))
+          prev.map((m) => (m.id === tempId ? { ...(data.message || m), status: 'delivered', is_me: true } : m))
         );
       } else {
         onShowToast('Failed to deliver message.');
@@ -1895,15 +1905,16 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       {/* Voice Audio Note */}
                       {isAudio && m.file_url ? (
                         <VoiceNotePlayer audioUrl={m.file_url} duration={m.file_size} isMe={isMe} />
-                      ) : m.file_url ? (
+                      ) : sanitizeMediaUrl(m.file_url) ? (
                         /* Attached Image or File Preview */
                         <div className="mb-2">
                           {isImage ? (
                             <div className="rounded-xl overflow-hidden border border-slate-200 mb-1 max-w-sm">
                               <img
-                                src={m.file_url}
+                                src={sanitizeMediaUrl(m.file_url)}
                                 alt={m.file_name || 'Attached Image'}
                                 className="w-full max-h-60 object-cover"
+                                loading="lazy"
                               />
                             </div>
                           ) : (
@@ -1918,7 +1929,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                                 </div>
                               </div>
                               <a
-                                href={m.file_url}
+                                href={sanitizeMediaUrl(m.file_url)}
                                 download={m.file_name}
                                 target="_blank"
                                 rel="noreferrer"
@@ -2465,12 +2476,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       .map(m => (
                         <a
                           key={m.id}
-                          href={m.file_url}
+                          href={sanitizeMediaUrl(m.file_url)}
                           target="_blank"
                           rel="noreferrer"
                           className="aspect-square rounded-xl overflow-hidden border border-slate-200 hover:opacity-80 transition-opacity bg-slate-100"
                         >
-                          <img src={m.file_url} alt={m.file_name || 'Media'} className="w-full h-full object-cover" />
+                          <img src={sanitizeMediaUrl(m.file_url)} alt={m.file_name || 'Media'} className="w-full h-full object-cover" loading="lazy" />
                         </a>
                       ))}
                   </div>
@@ -2494,7 +2505,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                             </div>
                           </div>
                           <a
-                            href={m.file_url}
+                            href={sanitizeMediaUrl(m.file_url)}
                             download={m.file_name}
                             className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-blue-600 transition-colors shadow-xs"
                           >
@@ -2522,7 +2533,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                               <span className="text-[10px] text-slate-400">{new Date(m.created_at).toLocaleString()}</span>
                             </div>
                           </div>
-                          {m.file_url && <audio src={m.file_url} controls className="h-8 max-w-[200px]" />}
+                          {sanitizeMediaUrl(m.file_url) && <audio src={sanitizeMediaUrl(m.file_url)} preload="none" controls className="h-8 max-w-[200px]" />}
                         </div>
                       ))}
                   </div>

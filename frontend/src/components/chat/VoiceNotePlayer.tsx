@@ -7,7 +7,23 @@ interface VoiceNotePlayerProps {
   isMe?: boolean;
 }
 
+export function sanitizeMediaUrl(url?: string | null): string {
+  if (!url) return '';
+  if (url.startsWith('data:') || url.startsWith('blob:')) return url;
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+    // If it's a dev localhost link on production HTTPS, do NOT fetch it to prevent mixed content & ERR_CONNECTION_REFUSED
+    if (url.includes('localhost:8000') || url.includes('127.0.0.1:8000')) {
+      return '';
+    }
+    if (url.startsWith('http://')) {
+      return url.replace('http://', 'https://');
+    }
+  }
+  return url;
+}
+
 export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({ audioUrl, duration, isMe }) => {
+  const safeAudioUrl = sanitizeMediaUrl(audioUrl);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
@@ -15,7 +31,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({ audioUrl, dura
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio || !safeAudioUrl) return;
 
     const onLoadedMetadata = () => {
       setTotalDuration(audio.duration || 0);
@@ -39,15 +55,15 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({ audioUrl, dura
       audio.removeEventListener('timeupdate', onTimeUpdate);
       audio.removeEventListener('ended', onEnded);
     };
-  }, [audioUrl]);
+  }, [safeAudioUrl]);
 
   const togglePlay = () => {
-    if (!audioRef.current) return;
+    if (!audioRef.current || !safeAudioUrl) return;
     if (isPlaying) {
       audioRef.current.pause();
       setIsPlaying(false);
     } else {
-      audioRef.current.play();
+      audioRef.current.play().catch(() => {});
       setIsPlaying(true);
     }
   };
@@ -65,13 +81,16 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({ audioUrl, dura
 
   return (
     <div className="flex items-center gap-3 py-1 min-w-[220px]">
-      <audio ref={audioRef} src={audioUrl} preload="metadata" />
+      {safeAudioUrl ? (
+        <audio ref={audioRef} src={safeAudioUrl} preload="none" />
+      ) : null}
 
       {/* Play / Pause Circular Button */}
       <button
         type="button"
         onClick={togglePlay}
-        className={`w-10 h-10 rounded-full flex items-center justify-center shadow-md transition-all active:scale-95 cursor-pointer shrink-0 ${
+        disabled={!safeAudioUrl}
+        className={`w-10 h-10 rounded-full flex items-center justify-center shadow-md transition-all active:scale-95 cursor-pointer shrink-0 disabled:opacity-50 ${
           isMe
             ? 'bg-white text-[#182044] hover:bg-white/90'
             : 'bg-[var(--accent)] text-white hover:brightness-110 shadow-[var(--accent)]/30'
