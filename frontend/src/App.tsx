@@ -365,8 +365,8 @@ const MainLayout: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden text-[var(--ink)] bg-[#0c1317]">
-      {/* Sidebar - WhatsApp Web Style Slim Dock */}
+    <div className="flex h-screen overflow-hidden text-slate-800 bg-[#f8fafc]">
+      {/* Sidebar - Vertex Connect Executive Dock */}
       <Sidebar
         currentPage={currentPage}
         onPageChange={(p) => {

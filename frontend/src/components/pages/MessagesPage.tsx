@@ -187,6 +187,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   }, [starredMessageIds]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollContainerRef = useRef<HTMLDivElement>(null);
+  const shouldInstantScrollRef = useRef<boolean>(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const activeFriendRef = useRef<ConnectionUser | null>(activeFriend);
@@ -195,15 +197,23 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
   useEffect(() => {
     activeFriendRef.current = activeFriend;
+    shouldInstantScrollRef.current = true;
   }, [activeFriend]);
 
-  // Scroll to bottom of chat
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // Scroll to bottom of chat without sliding from top when entering chat
+  const scrollToBottom = (instant = false) => {
+    if (chatScrollContainerRef.current) {
+      if (instant || shouldInstantScrollRef.current) {
+        chatScrollContainerRef.current.scrollTop = chatScrollContainerRef.current.scrollHeight;
+        shouldInstantScrollRef.current = false;
+      } else {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }
+    }
   };
 
   useEffect(() => {
-    scrollToBottom();
+    scrollToBottom(shouldInstantScrollRef.current);
   }, [messages]);
 
   // 1. Fetch user's friends and pending requests from Backend (Isolated per user)
@@ -851,7 +861,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `WhatsApp_Chat_with_${activeFriend.connect_id}.txt`;
+    a.download = `Vertex_Chat_with_${activeFriend.connect_id}.txt`;
     a.click();
     onShowToast('Chat transcript exported successfully!');
   };
@@ -984,7 +994,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      if (!target.closest('.whatsapp-menu-container') && !target.closest('.whatsapp-menu-btn')) {
+      if (!target.closest('.vertex-menu-container') && !target.closest('.vertex-menu-btn')) {
         setIsChatListMenuOpen(false);
         setIsChatMenuOpen(false);
       }
@@ -1024,15 +1034,15 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   });
 
   const WALLPAPER_CLASSES: Record<string, string> = {
-    default: 'bg-[#111b21]',
-    doodle: 'bg-[#0b141a] bg-[radial-gradient(#128c7e_1px,transparent_1px)] [background-size:16px_16px]',
-    emerald: 'bg-gradient-to-b from-[#0b141a] via-[#07241f] to-[#0b141a]',
-    navy: 'bg-gradient-to-b from-[#0b1329] via-[#101b3b] to-[#070b1a]',
-    dark: 'bg-[#111b21]'
+    default: 'bg-[#f8fafc]',
+    doodle: 'bg-[#f8fafc] bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:20px_20px]',
+    emerald: 'bg-gradient-to-b from-[#f0fdf4] via-[#f8fafc] to-[#f0fdf4]',
+    navy: 'bg-gradient-to-b from-[#eff6ff] via-[#f8fafc] to-[#eff6ff]',
+    dark: 'bg-[#0f172a]'
   };
 
   return (
-    <div className="h-full w-full flex overflow-hidden bg-[#111b21] text-[#e9edef] select-none">
+    <div className="h-full w-full flex overflow-hidden bg-slate-50 text-slate-800 select-none">
       {/* Hidden File Input */}
       <input
         type="file"
@@ -1041,13 +1051,15 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         className="hidden"
       />
 
-      {/* LEFT SIDEBAR: Full WhatsApp Web Chats Column */}
-      <div className={`w-full md:w-[380px] lg:w-[420px] shrink-0 border-r border-[#222d34] flex flex-col bg-[#111b21] h-full ${activeFriend ? 'hidden md:flex' : 'flex'}`}>
-        {/* WhatsApp Chats Header */}
-        <div className="h-[60px] px-4 bg-[#202c33] flex items-center justify-between border-b border-[#222d34] shrink-0">
-          <h1 className="text-xl font-bold text-[#e9edef] tracking-tight">WhatsApp</h1>
-          <div className="flex items-center gap-3">
-            {/* WhatsApp 3-Dots Menu */}
+      {/* LEFT SIDEBAR: Executive Vertex Connect Chats Column */}
+      <div className={`w-full md:w-[380px] lg:w-[410px] shrink-0 border-r border-slate-200/80 flex flex-col bg-white h-full ${activeFriend ? 'hidden md:flex' : 'flex'}`}>
+        {/* Chats Header */}
+        <div className="h-[64px] px-4 bg-white flex items-center justify-between border-b border-slate-200/80 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-lg font-black text-slate-900 tracking-tight">Vertex Connect</h1>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* 3-Dots Menu */}
             <div className="relative">
               <button
                 type="button"
@@ -1056,23 +1068,23 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   setIsChatListMenuOpen(!isChatListMenuOpen);
                 }}
                 title="Menu"
-                className="whatsapp-menu-btn w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#374248] text-[#aebac1] hover:text-[#d1d7db] transition-colors cursor-pointer"
+                className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-slate-100 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
               >
                 <MoreVertical className="w-5 h-5" />
               </button>
 
-              {/* WhatsApp Chats List Dropdown */}
+              {/* Chats List Dropdown */}
               {isChatListMenuOpen && (
-                <div className="whatsapp-menu-container absolute right-0 top-11 w-56 rounded-2xl bg-[#233138] border border-white/10 shadow-2xl z-50 p-1.5 animate-in fade-in zoom-in-95 duration-150 text-[#d1d7db]">
+                <div className="vertex-menu-container absolute right-0 top-11 w-56 rounded-2xl bg-white border border-slate-200 shadow-2xl z-50 p-2 animate-in fade-in zoom-in-95 duration-150 text-slate-700">
                   <button
                     type="button"
                     onClick={() => {
                       setIsChatListMenuOpen(false);
                       setIsNewGroupModalOpen(true);
                     }}
-                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer font-medium"
                   >
-                    <Users className="w-4 h-4 text-[#00a884]" />
+                    <Users className="w-4 h-4 text-blue-600" />
                     <span>New group</span>
                   </button>
 
@@ -1080,11 +1092,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     type="button"
                     onClick={() => {
                       setIsChatListMenuOpen(false);
-                      onShowToast('New broadcast list created');
+                      onShowToast('New broadcast channel created');
                     }}
-                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer font-medium"
                   >
-                    <Share2 className="w-4 h-4 text-[#00a884]" />
+                    <Share2 className="w-4 h-4 text-blue-600" />
                     <span>New broadcast</span>
                   </button>
 
@@ -1094,9 +1106,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       setIsChatListMenuOpen(false);
                       setIsLinkedDevicesModalOpen(true);
                     }}
-                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer font-medium"
                   >
-                    <Laptop className="w-4 h-4 text-[#00a884]" />
+                    <Laptop className="w-4 h-4 text-blue-600" />
                     <span>Linked devices</span>
                   </button>
 
@@ -1106,13 +1118,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       setIsChatListMenuOpen(false);
                       setIsStarredMessagesModalOpen(true);
                     }}
-                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer font-medium"
                   >
-                    <Star className="w-4 h-4 text-amber-400" />
+                    <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
                     <span>Starred messages</span>
                   </button>
 
-                  <div className="h-[1px] bg-white/10 my-1" />
+                  <div className="h-[1px] bg-slate-100 my-1" />
 
                   <button
                     type="button"
@@ -1121,43 +1133,43 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       setChatFilter('all');
                       onShowToast('All chats marked as read');
                     }}
-                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer font-medium"
                   >
-                    <CheckCheck className="w-4 h-4 text-[#53bdeb]" />
+                    <CheckCheck className="w-4 h-4 text-blue-600" />
                     <span>Mark all as read</span>
                   </button>
                 </div>
               )}
             </div>
 
-            {/* WhatsApp Green Circular (+) New Chat Button */}
+            {/* Cobalt Blue (+) New Chat Button */}
             <button
               type="button"
               onClick={() => setIsNewGroupModalOpen(true)}
-              className="w-8 h-8 rounded-full bg-[#00a884] hover:bg-[#02906f] text-[#111b21] flex items-center justify-center transition-transform hover:scale-105 cursor-pointer shadow-md"
+              className="w-9 h-9 rounded-xl bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center shadow-md shadow-blue-500/25 transition-transform active:scale-95 cursor-pointer"
               title="New chat or group"
             >
-              <Plus className="w-5 h-5 text-[#111b21] stroke-[2.5]" />
+              <Plus className="w-5 h-5 text-white stroke-[2.5]" />
             </button>
           </div>
         </div>
 
         {/* Search Bar */}
-        <div className="px-3 pt-2 pb-1 bg-[#111b21] shrink-0">
-          <div className="h-9 px-3 rounded-xl bg-[#202c33] flex items-center gap-3">
-            <Search className="w-4 h-4 text-[#8696a0] shrink-0" />
+        <div className="px-3.5 pt-3 pb-2 bg-white shrink-0">
+          <div className="h-10 px-3.5 rounded-xl bg-slate-100/90 border border-slate-200/60 focus-within:border-blue-500 focus-within:bg-white focus-within:ring-2 focus-within:ring-blue-100 transition-all flex items-center gap-2.5">
+            <Search className="w-4 h-4 text-slate-400 shrink-0" />
             <input
               type="text"
               value={friendSearchTerm}
               onChange={(e) => setFriendSearchTerm(e.target.value)}
               placeholder="Search or start a new chat"
-              className="flex-1 bg-transparent border-none text-xs text-[#e9edef] placeholder-[#8696a0] focus:outline-none"
+              className="flex-1 bg-transparent border-none text-xs text-slate-800 placeholder-slate-400 focus:outline-none"
             />
             {friendSearchTerm && (
               <button
                 type="button"
                 onClick={() => setFriendSearchTerm('')}
-                className="text-[#8696a0] hover:text-[#d1d7db]"
+                className="text-slate-400 hover:text-slate-600"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -1166,14 +1178,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
 
         {/* Filter Pills: All, Unread 3, Favourites, Groups, + */}
-        <div className="px-3 py-2 bg-[#111b21] flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0 border-b border-[#222d34]">
+        <div className="px-3.5 py-2 bg-white flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0 border-b border-slate-100">
           <button
             type="button"
             onClick={() => setChatFilter('all')}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
+            className={`px-3 py-1 rounded-full text-xs transition-colors cursor-pointer ${
               chatFilter === 'all'
-                ? 'bg-[#0a332c] text-[#00a884] font-bold border border-[#00a884]/40'
-                : 'bg-[#202c33] text-[#8696a0] hover:text-[#d1d7db]'
+                ? 'bg-blue-600 text-white font-bold shadow-xs'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70 font-medium'
             }`}
           >
             All
@@ -1182,10 +1194,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           <button
             type="button"
             onClick={() => setChatFilter('unread')}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
+            className={`px-3 py-1 rounded-full text-xs transition-colors cursor-pointer ${
               chatFilter === 'unread'
-                ? 'bg-[#0a332c] text-[#00a884] font-bold border border-[#00a884]/40'
-                : 'bg-[#202c33] text-[#8696a0] hover:text-[#d1d7db]'
+                ? 'bg-blue-600 text-white font-bold shadow-xs'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70 font-medium'
             }`}
           >
             Unread 3
@@ -1194,10 +1206,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           <button
             type="button"
             onClick={() => setChatFilter('favourites')}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
+            className={`px-3 py-1 rounded-full text-xs transition-colors cursor-pointer ${
               chatFilter === 'favourites'
-                ? 'bg-[#0a332c] text-[#00a884] font-bold border border-[#00a884]/40'
-                : 'bg-[#202c33] text-[#8696a0] hover:text-[#d1d7db]'
+                ? 'bg-blue-600 text-white font-bold shadow-xs'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70 font-medium'
             }`}
           >
             Favourites
@@ -1206,10 +1218,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           <button
             type="button"
             onClick={() => setChatFilter('groups')}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
+            className={`px-3 py-1 rounded-full text-xs transition-colors cursor-pointer ${
               chatFilter === 'groups'
-                ? 'bg-[#0a332c] text-[#00a884] font-bold border border-[#00a884]/40'
-                : 'bg-[#202c33] text-[#8696a0] hover:text-[#d1d7db]'
+                ? 'bg-blue-600 text-white font-bold shadow-xs'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70 font-medium'
             }`}
           >
             Groups
@@ -1218,7 +1230,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           <button
             type="button"
             onClick={() => setIsNewGroupModalOpen(true)}
-            className="w-7 h-7 rounded-full bg-[#202c33] hover:bg-[#374248] text-[#8696a0] hover:text-[#d1d7db] flex items-center justify-center transition-colors cursor-pointer shrink-0"
+            className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition-colors cursor-pointer shrink-0"
             title="Create group"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -1226,37 +1238,35 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
 
         {/* Quick Rows: Locked Chats & Archived */}
-        <div className="bg-[#111b21] divide-y divide-[#222d34]/60 border-b border-[#222d34] shrink-0">
+        <div className="bg-white divide-y divide-slate-100 border-b border-slate-100 shrink-0">
           <div
             onClick={() => onShowToast('Locked chats are protected with passcode')}
-            className="px-4 py-2.5 flex items-center gap-3 hover:bg-[#202c33] transition-colors cursor-pointer"
+            className="px-4 py-2.5 flex items-center gap-3 hover:bg-slate-50 transition-colors cursor-pointer"
           >
-            <Lock className="w-4 h-4 text-[#00a884]" />
-            <span className="text-xs font-semibold text-[#d1d7db]">Locked chats</span>
+            <Lock className="w-4 h-4 text-blue-600" />
+            <span className="text-xs font-semibold text-slate-700">Locked chats</span>
           </div>
 
           <div
             onClick={() => onShowToast(pendingIncoming.length > 0 ? `${pendingIncoming.length} pending connection requests` : 'Archived chats folder')}
-            className="px-4 py-2.5 flex items-center justify-between hover:bg-[#202c33] transition-colors cursor-pointer"
+            className="px-4 py-2.5 flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer"
           >
             <div className="flex items-center gap-3">
-              <Archive className="w-4 h-4 text-[#8696a0]" />
-              <span className="text-xs font-semibold text-[#d1d7db]">Archived</span>
+              <Archive className="w-4 h-4 text-slate-400" />
+              <span className="text-xs font-semibold text-slate-700">Archived</span>
             </div>
             {pendingIncoming.length > 0 && (
-              <span className="px-2 py-0.5 rounded-full bg-[#00a884] text-[#111b21] text-[10px] font-bold">
+              <span className="px-2 py-0.5 rounded-full bg-blue-600 text-white text-[10px] font-bold">
                 {pendingIncoming.length}
               </span>
             )}
           </div>
         </div>
 
-
-
         {/* Conversations List */}
-        <div className="flex-1 overflow-y-auto divide-y divide-[#222d34]/40">
+        <div className="flex-1 overflow-y-auto divide-y divide-slate-100/80">
           {displayedFriends.length === 0 ? (
-            <div className="p-8 text-center text-[#8696a0] text-xs">
+            <div className="p-8 text-center text-slate-400 text-xs">
               {chatFilter === 'groups'
                 ? 'No groups found. Click (+) above to create your group!'
                 : chatFilter === 'favourites'
@@ -1271,37 +1281,37 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 <div
                   key={f.connection_id}
                   onClick={() => setActiveFriend(f)}
-                  className={`h-[72px] px-3.5 flex items-center gap-3 cursor-pointer transition-colors relative ${
-                    isSelected ? 'bg-[#2a3942]' : 'hover:bg-[#202c33]'
+                  className={`h-[74px] px-3.5 flex items-center gap-3 cursor-pointer transition-colors relative ${
+                    isSelected ? 'bg-blue-50/80 border-l-4 border-blue-600' : 'hover:bg-slate-50'
                   }`}
                 >
                   <div className="relative shrink-0">
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-sm text-white shadow-sm ${
+                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-sm text-white shadow-sm ${
                       isGroup
-                        ? 'bg-gradient-to-tr from-[#128c7e] to-[#25d366]'
-                        : 'bg-gradient-to-tr from-[#00a884] via-[#128c7e] to-[#3b82f6]'
+                        ? 'bg-gradient-to-tr from-blue-600 to-indigo-600'
+                        : 'bg-gradient-to-tr from-blue-500 via-indigo-500 to-sky-500'
                     }`}>
                       {isGroup ? <Users className="w-6 h-6 text-white" /> : f.name.slice(0, 2).toUpperCase()}
                     </div>
                     {!isGroup && f.status === 'online' && (
-                      <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-[#25d366] border-2 border-[#111b21]" />
+                      <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white" />
                     )}
                   </div>
 
                   <div className="flex-1 min-w-0 pr-1">
                     <div className="flex items-center justify-between">
-                      <b className="text-sm font-semibold text-[#e9edef] truncate">{f.name}</b>
-                      <span className="text-[11px] text-[#8696a0] shrink-0">
+                      <b className="text-sm font-bold text-slate-900 truncate">{f.name}</b>
+                      <span className="text-[11px] text-slate-400 font-medium shrink-0">
                         {isGroup ? 'Group' : f.status === 'online' ? 'online' : 'Thursday'}
                       </span>
                     </div>
 
-                    <div className="flex items-center justify-between text-xs text-[#8696a0] mt-1">
+                    <div className="flex items-center justify-between text-xs text-slate-500 mt-1">
                       <span className="truncate max-w-[210px]">
                         {isGroup ? f.bio : f.bio || 'Direct connection'}
                       </span>
                       {favouriteChatIds.has(f.connection_id) && (
-                        <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-500 shrink-0" />
+                        <Heart className="w-3.5 h-3.5 text-blue-600 fill-blue-600 shrink-0" />
                       )}
                     </div>
                   </div>
@@ -1311,39 +1321,39 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           )}
         </div>
 
-        {/* Bottom Banner: Get WhatsApp for Windows */}
-        <div className="p-3 bg-[#111b21] border-t border-[#222d34] flex items-center gap-3 shrink-0">
-          <div className="w-8 h-8 rounded-lg bg-[#25d366]/20 flex items-center justify-center text-[#25d366] shrink-0">
+        {/* Bottom Banner: Vertex Connect for Desktop */}
+        <div className="p-3.5 bg-slate-50 border-t border-slate-200/80 flex items-center gap-3 shrink-0">
+          <div className="w-8 h-8 rounded-xl bg-blue-100 flex items-center justify-center text-blue-600 shrink-0 font-bold">
             <Laptop className="w-4 h-4" />
           </div>
           <div className="min-w-0 flex-1">
-            <span className="text-xs font-semibold text-[#e9edef] block">Get WhatsApp for Windows</span>
-            <span className="text-[10px] text-[#8696a0]">Seamless calls & faster messaging</span>
+            <span className="text-xs font-bold text-slate-900 block">Vertex Connect Desktop</span>
+            <span className="text-[10px] text-slate-500">HD calls & lightning-fast messaging</span>
           </div>
         </div>
       </div>
 
-      {/* RIGHT SIDE: WhatsApp Style Chat Pane */}
+      {/* RIGHT SIDE: Executive Vertex Connect Chat Pane */}
       {activeFriend ? (
-        <div className="flex-1 flex flex-col bg-[#0b141a]">
+        <div className="flex-1 flex flex-col bg-[#f8fafc]">
           {/* Header with Friend details, Call buttons */}
-          <div className="h-[60px] px-4 border-b border-[#222d34] flex items-center justify-between bg-[#202c33] shrink-0 text-[#e9edef]">
+          <div className="h-[64px] px-4 border-b border-slate-200/80 flex items-center justify-between bg-white shrink-0 text-slate-800">
             <div className="flex items-center gap-3 min-w-0">
               {/* Mobile Back Button to return to Chats List */}
               <button
                 type="button"
                 onClick={() => setActiveFriend(null)}
-                className="md:hidden p-1.5 -ml-1 rounded-full text-[#aebac1] hover:bg-[#111b21] cursor-pointer"
+                className="md:hidden p-1.5 -ml-1 rounded-full text-slate-500 hover:bg-slate-100 cursor-pointer"
                 title="Back to chats"
               >
                 <ArrowLeft className="w-5 h-5" />
               </button>
 
               <div className="relative shrink-0">
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white shadow-sm ${
+                <div className={`w-10 h-10 rounded-2xl flex items-center justify-center font-bold text-sm text-white shadow-sm ${
                   activeFriend.connection_id.startsWith('group_')
-                    ? 'bg-gradient-to-tr from-[#128c7e] to-[#25d366]'
-                    : 'bg-gradient-to-tr from-[#00a884] via-[#128c7e] to-[#3b82f6]'
+                    ? 'bg-gradient-to-tr from-blue-600 to-indigo-600'
+                    : 'bg-gradient-to-tr from-blue-500 via-indigo-500 to-sky-500'
                 }`}>
                   {activeFriend.connection_id.startsWith('group_') ? (
                     <Users className="w-5 h-5 text-white" />
@@ -1352,7 +1362,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   )}
                 </div>
                 {!activeFriend.connection_id.startsWith('group_') && activeFriend.status === 'online' && (
-                  <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#25d366] border-2 border-[#202c33]" />
+                  <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
                 )}
               </div>
 
@@ -1362,27 +1372,30 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 title="View contact info"
               >
                 <div className="flex items-center gap-2 truncate">
-                  <b className="text-sm font-semibold text-[#e9edef] leading-tight truncate">
+                  <b className="text-sm font-bold text-slate-900 leading-tight truncate">
                     {activeFriend.name}
                   </b>
+                  <span className="text-[10px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full shrink-0">
+                    @{activeFriend.connect_id}
+                  </span>
                   {isMuted && (
                     <span title="Notifications muted" className="inline-flex items-center">
-                      <BellOff className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />
+                      <BellOff className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                     </span>
                   )}
                   {disappearingOption !== 'off' && (
                     <span title={`Disappearing: ${disappearingOption}`} className="inline-flex items-center">
-                      <Clock className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />
+                      <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                     </span>
                   )}
                 </div>
-                <small className="text-[11px] text-[#8696a0] flex items-center gap-1 truncate">
+                <small className="text-[11px] text-slate-500 flex items-center gap-1 truncate">
                   {isTyping ? (
-                    <span className="text-[#25d366] font-medium animate-pulse">typing…</span>
+                    <span className="text-blue-600 font-semibold animate-pulse">typing…</span>
                   ) : activeFriend.connection_id.startsWith('group_') ? (
                     <span>click here for group info</span>
                   ) : activeFriend.status === 'online' ? (
-                    <span className="text-[#25d366]">online</span>
+                    <span className="text-emerald-600 font-medium">online</span>
                   ) : (
                     <span className="truncate">{activeFriend.bio || 'last seen recently'}</span>
                   )}
@@ -1390,36 +1403,36 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               </div>
             </div>
 
-            {/* Quick Actions (Voice, Video, In-Chat Search & WhatsApp 3-Dots Menu) */}
-            <div className="flex items-center gap-2 text-[#aebac1]">
+            {/* Quick Actions (Voice, Video, In-Chat Search & 3-Dots Menu) */}
+            <div className="flex items-center gap-1 text-slate-600">
               <button
                 type="button"
                 onClick={() => onStartCall(activeFriend.name, 'video', activeFriend.user_id, activeFriend.connect_id)}
                 title="Video call"
-                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] transition-colors cursor-pointer"
+                className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-blue-50 text-slate-600 hover:text-blue-600 transition-colors cursor-pointer"
               >
-                <Video className="w-5 h-5 text-[#aebac1]" />
+                <Video className="w-5 h-5" />
               </button>
               <button
                 type="button"
                 onClick={() => onStartCall(activeFriend.name, 'audio', activeFriend.user_id, activeFriend.connect_id)}
                 title="Voice call"
-                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] transition-colors cursor-pointer"
+                className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-blue-50 text-slate-600 hover:text-blue-600 transition-colors cursor-pointer"
               >
-                <Phone className="w-4.5 h-4.5 text-[#aebac1]" />
+                <Phone className="w-4.5 h-4.5" />
               </button>
               <button
                 type="button"
                 onClick={() => setIsInChatSearchOpen(!isInChatSearchOpen)}
                 title="Search in chat"
-                className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
-                  isInChatSearchOpen ? 'bg-[#111b21] text-[#00a884]' : 'hover:bg-[#111b21] text-[#aebac1]'
+                className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${
+                  isInChatSearchOpen ? 'bg-blue-50 text-blue-600' : 'hover:bg-blue-50 text-slate-600 hover:text-blue-600'
                 }`}
               >
                 <Search className="w-4.5 h-4.5" />
               </button>
 
-              {/* WhatsApp Active Chat 3-Dots Menu Button */}
+              {/* Active Chat 3-Dots Menu Button */}
               <div className="relative">
                 <button
                   type="button"
@@ -1428,14 +1441,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     setIsChatMenuOpen(!isChatMenuOpen);
                   }}
                   title="Menu"
-                  className="whatsapp-menu-btn w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] text-[#aebac1] transition-colors cursor-pointer"
+                  className="vertex-menu-btn w-9 h-9 rounded-xl flex items-center justify-center hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
                 >
                   <MoreVertical className="w-5 h-5" />
                 </button>
 
-                {/* WhatsApp Chat 3-Dots Dropdown Menu - EXACT 16 ITEMS FROM REFERENCE */}
+                {/* Chat 3-Dots Dropdown Menu - EXACT 16 ITEMS */}
                 {isChatMenuOpen && (
-                  <div className="whatsapp-menu-container absolute right-0 top-11 w-64 rounded-xl bg-[#233138] shadow-2xl z-50 py-2 border border-[#2e3e46] animate-in fade-in zoom-in-95 duration-100 text-[#d1d7db]">
+                  <div className="vertex-menu-container absolute right-0 top-11 w-64 rounded-2xl bg-white shadow-2xl z-50 py-2 border border-slate-200 animate-in fade-in zoom-in-95 duration-100 text-slate-700">
                     {/* 1. Contact info */}
                     <button
                       type="button"
@@ -1443,9 +1456,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsContactInfoOpen(true);
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <Info className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <Info className="w-4 h-4 text-blue-600" />
                       <span>{activeFriend.connection_id.startsWith('group_') ? 'Group info' : 'Contact info'}</span>
                     </button>
 
@@ -1456,9 +1469,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsInChatSearchOpen(true);
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <Search className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <Search className="w-4 h-4 text-blue-600" />
                       <span>Search</span>
                     </button>
 
@@ -1469,9 +1482,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         onShowToast('Select messages enabled');
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <CheckSquare className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <CheckSquare className="w-4 h-4 text-blue-600" />
                       <span>Select messages</span>
                     </button>
 
@@ -1482,13 +1495,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsMuteModalOpen(true);
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center justify-between hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center justify-between hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
                       <div className="flex items-center gap-3.5">
-                        <BellOff className="w-4.5 h-4.5 text-[#8696a0]" />
+                        <BellOff className="w-4 h-4 text-slate-500" />
                         <span>Mute notifications</span>
                       </div>
-                      <ChevronRight className="w-4 h-4 text-[#8696a0]" />
+                      <ChevronRight className="w-4 h-4 text-slate-400" />
                     </button>
 
                     {/* 5. Disappearing messages */}
@@ -1498,9 +1511,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsDisappearingModalOpen(true);
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <Clock className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <Clock className="w-4 h-4 text-slate-500" />
                       <span>Disappearing messages</span>
                     </button>
 
@@ -1511,9 +1524,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsWallpaperModalOpen(true);
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <Palette className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <Palette className="w-4 h-4 text-blue-600" />
                       <span>Chat theme</span>
                     </button>
 
@@ -1524,9 +1537,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         toggleFavouriteChat(activeFriend.connection_id);
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <Heart className={`w-4.5 h-4.5 ${favouriteChatIds.has(activeFriend.connection_id) ? 'text-rose-500 fill-rose-500' : 'text-[#8696a0]'}`} />
+                      <Heart className={`w-4 h-4 ${favouriteChatIds.has(activeFriend.connection_id) ? 'text-blue-600 fill-blue-600' : 'text-slate-400'}`} />
                       <span>{favouriteChatIds.has(activeFriend.connection_id) ? 'Remove from favourites' : 'Add to favourites'}</span>
                     </button>
 
@@ -1537,13 +1550,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         onShowToast('Chat added to custom list');
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center justify-between hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center justify-between hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
                       <div className="flex items-center gap-3.5">
-                        <ListFilter className="w-4.5 h-4.5 text-[#8696a0]" />
+                        <ListFilter className="w-4 h-4 text-slate-500" />
                         <span>Add to list</span>
                       </div>
-                      <ChevronRight className="w-4 h-4 text-[#8696a0]" />
+                      <ChevronRight className="w-4 h-4 text-slate-400" />
                     </button>
 
                     {/* 9. Export chat */}
@@ -1553,9 +1566,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         handleExportChat();
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <Download className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <Download className="w-4 h-4 text-blue-600" />
                       <span>Export chat</span>
                     </button>
 
@@ -1566,14 +1579,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setActiveFriend(null);
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <XCircle className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <XCircle className="w-4 h-4 text-slate-500" />
                       <span>Close chat</span>
                     </button>
 
                     {/* Divider 1 */}
-                    <div className="h-[1px] bg-[#2e3e46] my-1" />
+                    <div className="h-[1px] bg-slate-100 my-1" />
 
                     {/* 11. Send call link */}
                     <button
@@ -1582,9 +1595,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         handleSendCallLink();
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <Link2 className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <Link2 className="w-4 h-4 text-blue-600" />
                       <span>Send call link</span>
                     </button>
 
@@ -1595,14 +1608,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         onStartCall(activeFriend.name, 'video', activeFriend.user_id, activeFriend.connect_id);
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <Users className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <Users className="w-4 h-4 text-blue-600" />
                       <span>New group call</span>
                     </button>
 
                     {/* Divider 2 */}
-                    <div className="h-[1px] bg-[#2e3e46] my-1" />
+                    <div className="h-[1px] bg-slate-100 my-1" />
 
                     {/* 13. Report */}
                     <button
@@ -1611,9 +1624,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         onShowToast('Report submitted for safety review');
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <ThumbsDown className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <ThumbsDown className="w-4 h-4 text-slate-500" />
                       <span>Report</span>
                     </button>
 
@@ -1624,9 +1637,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsBlockModalOpen(true);
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <Ban className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <Ban className="w-4 h-4 text-slate-500" />
                       <span>{isBlocked ? 'Unblock' : 'Block'}</span>
                     </button>
 
@@ -1637,9 +1650,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         setIsClearChatModalOpen(true);
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer"
                     >
-                      <MinusCircle className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <MinusCircle className="w-4 h-4 text-slate-500" />
                       <span>Clear chat</span>
                     </button>
 
@@ -1650,9 +1663,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         setIsChatMenuOpen(false);
                         handleDeleteChat();
                       }}
-                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] text-rose-400 hover:text-rose-300 transition-colors text-left cursor-pointer"
+                      className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-rose-50 text-rose-600 transition-colors text-left cursor-pointer"
                     >
-                      <Trash2 className="w-4.5 h-4.5 text-rose-400" />
+                      <Trash2 className="w-4 h-4 text-rose-500" />
                       <span>Delete chat</span>
                     </button>
                   </div>
@@ -1661,20 +1674,20 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             </div>
           </div>
 
-          {/* In-Chat Search Bar (WhatsApp Style) */}
+          {/* In-Chat Search Bar */}
           {isInChatSearchOpen && (
-            <div className="px-4 py-2 bg-black/10 dark:bg-[#111b21] border-b border-black/5 dark:border-white/10 flex items-center gap-2 animate-in slide-in-from-top-2 duration-150">
-              <Search className="w-4 h-4 text-[#8ce7f2] shrink-0" />
+            <div className="px-4 py-2.5 bg-white border-b border-slate-200 flex items-center gap-2.5 animate-in slide-in-from-top-2 duration-150">
+              <Search className="w-4 h-4 text-blue-600 shrink-0" />
               <input
                 type="text"
                 value={inChatSearchQuery}
                 onChange={(e) => setInChatSearchQuery(e.target.value)}
                 placeholder="Search messages in this chat..."
                 autoFocus
-                className="flex-1 bg-transparent border-none text-xs text-[#182044] dark:text-[#f1f3ff] placeholder-[#71809a] focus:outline-none"
+                className="flex-1 bg-transparent border-none text-xs text-slate-800 placeholder-slate-400 focus:outline-none"
               />
               {inChatSearchQuery && (
-                <span className="text-[10px] text-[#8ce7f2] font-semibold">
+                <span className="text-[10px] text-blue-600 font-semibold bg-blue-50 px-2 py-0.5 rounded-full">
                   {filteredMessages.length} {filteredMessages.length === 1 ? 'match' : 'matches'}
                 </span>
               )}
@@ -1684,28 +1697,33 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   setIsInChatSearchOpen(false);
                   setInChatSearchQuery('');
                 }}
-                className="p-1 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 text-[#71809a]"
+                className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
           )}
 
-          {/* Messages Thread (WhatsApp Style with dynamic wallpaper) */}
-          <div className={`flex-1 overflow-y-auto p-4 md:p-6 space-y-4 transition-colors ${WALLPAPER_CLASSES[chatWallpaper] || ''}`}>
+          {/* Messages Thread (Snaps immediately to bottom without sliding from top) */}
+          <div
+            ref={chatScrollContainerRef}
+            className={`flex-1 overflow-y-auto p-4 md:p-6 space-y-3.5 transition-colors ${WALLPAPER_CLASSES[chatWallpaper] || ''}`}
+          >
             <div className="text-center">
-              <span className="text-[10px] uppercase font-bold text-[#8491a5] dark:text-[#8898b3] bg-white/50 dark:bg-[#111b21]/90 px-3 py-1 rounded-full border border-black/5 dark:border-white/10 shadow-sm">
-                End-to-End Encrypted Direct Channel with @{activeFriend.connect_id}
+              <span className="text-[10px] uppercase font-bold text-slate-500 bg-white/90 backdrop-blur-sm px-3.5 py-1 rounded-full border border-slate-200 shadow-xs">
+                End-to-End Encrypted Channel • @{activeFriend.connect_id}
               </span>
             </div>
 
             {filteredMessages.length === 0 ? (
-              <div className="h-64 flex flex-col items-center justify-center text-center text-[#71809a]">
-                <MessageSquare className="w-10 h-10 mb-2 opacity-30 text-[var(--accent)]" />
-                <p className="text-xs font-bold text-[#182044] dark:text-[#f1f3ff]">
+              <div className="h-64 flex flex-col items-center justify-center text-center text-slate-400">
+                <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-2">
+                  <MessageSquare className="w-6 h-6" />
+                </div>
+                <p className="text-xs font-bold text-slate-800">
                   {inChatSearchQuery ? 'No matching messages found' : `Connected with @${activeFriend.connect_id}`}
                 </p>
-                <span className="text-[11px] text-[#8491a5] mt-0.5">
+                <span className="text-[11px] text-slate-500 mt-0.5">
                   {inChatSearchQuery ? 'Try a different search term.' : 'Send a message, audio voice note, or files to collaborate!'}
                 </span>
               </div>
@@ -1721,9 +1739,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     key={m.id}
                     className={`group relative flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-full`}
                   >
-                    {/* Floating Reaction & Action Bar (WhatsApp Style Hover) */}
+                    {/* Floating Reaction & Action Bar */}
                     <div
-                      className={`opacity-0 group-hover:opacity-100 transition-opacity absolute -top-8 flex items-center gap-1 bg-[#141b43]/90 dark:bg-[#0c1230]/90 backdrop-blur-md px-2 py-0.5 rounded-full border border-white/20 shadow-xl z-20 ${
+                      className={`opacity-0 group-hover:opacity-100 transition-opacity absolute -top-8 flex items-center gap-1 bg-white/95 backdrop-blur-md px-2 py-0.5 rounded-full border border-slate-200 shadow-lg z-20 ${
                         isMe ? 'right-0' : 'left-0'
                       }`}
                     >
@@ -1737,19 +1755,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                           {emoji}
                         </button>
                       ))}
-                      <div className="w-[1px] h-3 bg-white/20 mx-0.5" />
+                      <div className="w-[1px] h-3 bg-slate-200 mx-0.5" />
                       <button
                         type="button"
                         onClick={() => handleToggleStar(m.id)}
-                        className={`hover:scale-110 transition-transform p-1 cursor-pointer ${isStarred ? 'text-amber-400' : 'text-white/70 hover:text-amber-400'}`}
+                        className={`hover:scale-110 transition-transform p-1 cursor-pointer ${isStarred ? 'text-amber-500' : 'text-slate-400 hover:text-amber-500'}`}
                         title={isStarred ? 'Unstar message' : 'Star message'}
                       >
-                        <Star className={`w-3.5 h-3.5 ${isStarred ? 'fill-amber-400' : ''}`} />
+                        <Star className={`w-3.5 h-3.5 ${isStarred ? 'fill-amber-500' : ''}`} />
                       </button>
                       <button
                         type="button"
                         onClick={() => handleCopyMessage(m.content || m.file_name || '')}
-                        className="hover:scale-110 transition-transform text-white/70 hover:text-white p-1 cursor-pointer"
+                        className="hover:scale-110 transition-transform text-slate-400 hover:text-slate-700 p-1 cursor-pointer"
                         title="Copy message"
                       >
                         <Copy className="w-3.5 h-3.5" />
@@ -1757,7 +1775,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       <button
                         type="button"
                         onClick={() => setReplyingTo({ id: m.id, sender_name: m.sender_name, content: m.content || m.file_name || 'Attachment' })}
-                        className="hover:scale-110 transition-transform text-white/70 hover:text-white p-1 cursor-pointer"
+                        className="hover:scale-110 transition-transform text-slate-400 hover:text-slate-700 p-1 cursor-pointer"
                         title="Reply"
                       >
                         <Reply className="w-3.5 h-3.5" />
@@ -1765,7 +1783,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       <button
                         type="button"
                         onClick={() => handleDeleteMessage(m.id)}
-                        className="hover:scale-110 transition-transform text-white/70 hover:text-rose-400 p-1 cursor-pointer"
+                        className="hover:scale-110 transition-transform text-slate-400 hover:text-rose-500 p-1 cursor-pointer"
                         title="Delete for me"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -1773,33 +1791,33 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     </div>
 
                     <div
-                      className={`max-w-[80%] sm:max-w-[70%] px-3 py-2 rounded-lg shadow-sm text-xs leading-relaxed relative ${
+                      className={`max-w-[80%] sm:max-w-[72%] px-4 py-2.5 rounded-2xl shadow-sm text-xs leading-relaxed relative ${
                         isMe
-                          ? 'bg-[#005c4b] text-[#e9edef] rounded-tr-none'
-                          : 'bg-[#202c33] text-[#e9edef] rounded-tl-none border border-[#2e3e46]/30'
+                          ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-tr-xs shadow-blue-500/10'
+                          : 'bg-white text-slate-800 border border-slate-200/90 rounded-tl-xs shadow-xs'
                       }`}
                     >
                       {/* Quoted Reply Block */}
                       {m.reply_to_snippet && (
                         <div
-                          className={`mb-2 p-2 rounded-md text-[11px] border-l-4 ${
+                          className={`mb-2 p-2 rounded-xl text-[11px] border-l-3 ${
                             isMe
-                              ? 'bg-[#025143] border-[#25d366] text-[#d1d7db]'
-                              : 'bg-[#182229] border-[#00a884] text-[#d1d7db]'
+                              ? 'bg-blue-700/50 border-white text-blue-100'
+                              : 'bg-slate-100 border-blue-600 text-slate-700'
                           }`}
                         >
                           <span className="font-bold block truncate opacity-90">{m.reply_to_snippet}</span>
                         </div>
                       )}
 
-                      {/* WhatsApp Style Voice Audio Note */}
+                      {/* Voice Audio Note */}
                       {isAudio && m.file_url ? (
                         <VoiceNotePlayer audioUrl={m.file_url} duration={m.file_size} isMe={isMe} />
                       ) : m.file_url ? (
                         /* Attached Image or File Preview */
                         <div className="mb-2">
                           {isImage ? (
-                            <div className="rounded-xl overflow-hidden border border-white/20 mb-1 max-w-sm">
+                            <div className="rounded-xl overflow-hidden border border-slate-200 mb-1 max-w-sm">
                               <img
                                 src={m.file_url}
                                 alt={m.file_name || 'Attached Image'}
@@ -1807,14 +1825,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                               />
                             </div>
                           ) : (
-                            <div className="p-2.5 rounded-xl bg-black/10 dark:bg-white/10 flex items-center justify-between gap-3 mb-1">
+                            <div className="p-2.5 rounded-xl bg-slate-100 flex items-center justify-between gap-3 mb-1 text-slate-800">
                               <div className="flex items-center gap-2 min-w-0">
-                                <FileText className="w-5 h-5 shrink-0 text-[#8ce7f2]" />
+                                <FileText className="w-5 h-5 shrink-0 text-blue-600" />
                                 <div className="min-w-0">
                                   <span className="font-bold text-xs block truncate max-w-[200px]">
                                     {m.file_name}
                                   </span>
-                                  <span className="text-[10px] opacity-80">{m.file_size}</span>
+                                  <span className="text-[10px] text-slate-500">{m.file_size}</span>
                                 </div>
                               </div>
                               <a
@@ -1822,7 +1840,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                                 download={m.file_name}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="p-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-current transition-colors"
+                                className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-blue-600 transition-colors shadow-xs"
                                 title="Download"
                               >
                                 <Download className="w-4 h-4" />
@@ -1851,8 +1869,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                               title={users.join(', ')}
                               className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
                                 hasReacted
-                                  ? 'bg-[var(--accent)]/20 border-[var(--accent)] text-[var(--accent)] font-black'
-                                  : 'bg-white/70 dark:bg-white/10 border-black/5 dark:border-white/10 text-[#40516c] dark:text-[#cbd4ff]'
+                                  ? 'bg-blue-50 border-blue-200 text-blue-600'
+                                  : 'bg-white border-slate-200 text-slate-600 shadow-xs'
                               }`}
                             >
                               <span>{emoji}</span>
@@ -1863,26 +1881,26 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       </div>
                     )}
 
-                    {/* WhatsApp Timestamp, Star & Blue Ticks */}
-                    <div className="flex items-center gap-1 mt-1 text-[10px] text-[#8491a5] dark:text-[#8898b3] px-1">
+                    {/* Timestamp, Star & Blue Ticks */}
+                    <div className="flex items-center gap-1 mt-1 text-[10px] text-slate-400 font-medium px-1">
                       {isStarred && (
                         <span title="Starred message" className="inline-flex items-center">
-                          <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
+                          <Star className="w-3 h-3 text-amber-500 fill-amber-500 shrink-0" />
                         </span>
                       )}
                       <span>{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                       {isMe && (
                         m.is_read ? (
                           <span title="Read">
-                            <CheckCheck className="w-3.5 h-3.5 text-[#53bdeb]" />
+                            <CheckCheck className="w-3.5 h-3.5 text-blue-500" />
                           </span>
                         ) : (activeFriend?.status === 'online' || activeFriend?.status === 'in_call' || m.status === 'delivered') ? (
                           <span title="Delivered">
-                            <CheckCheck className="w-3.5 h-3.5 text-[#8696a0]" />
+                            <CheckCheck className="w-3.5 h-3.5 text-slate-400" />
                           </span>
                         ) : (
                           <span title="Sent">
-                            <Check className="w-3.5 h-3.5 text-[#8696a0]" />
+                            <Check className="w-3.5 h-3.5 text-slate-400" />
                           </span>
                         )
                       )}
@@ -1891,16 +1909,16 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 );
               })
             )}
-            {/* WhatsApp-Style Animated In-Stream Typing Bubble */}
+            {/* Animated In-Stream Typing Bubble */}
             {isTyping && (
-              <div className="flex items-center gap-2.5 p-2 px-3.5 max-w-[130px] rounded-2xl bg-white/70 dark:bg-[#1a2249] border border-black/5 dark:border-white/10 shadow-sm animate-in fade-in duration-200 mb-2">
-                <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-[#8cf4ff] to-[#d6a2ff] flex items-center justify-center text-[10px] font-bold text-[#171a42] shrink-0">
+              <div className="flex items-center gap-2.5 p-2 px-3.5 max-w-[130px] rounded-2xl bg-white border border-slate-200 shadow-xs animate-in fade-in duration-200 mb-2">
+                <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-[10px] font-bold text-blue-600 shrink-0">
                   {activeFriend.name.slice(0, 2).toUpperCase()}
                 </div>
                 <div className="flex items-center gap-1 py-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-bounce [animation-delay:-0.3s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-bounce [animation-delay:-0.15s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-bounce" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-bounce [animation-delay:-0.3s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-bounce [animation-delay:-0.15s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-bounce" />
                 </div>
               </div>
             )}
@@ -1909,27 +1927,27 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
           {/* Replying Banner (if user clicked reply on any message) */}
           {replyingTo && (
-            <div className="px-5 py-2 bg-[var(--accent)]/15 border-t border-black/5 dark:border-white/10 flex items-center justify-between text-xs text-[#182044] dark:text-[#f1f3ff] animate-in fade-in duration-150">
+            <div className="px-5 py-2 bg-blue-50 border-t border-blue-100 flex items-center justify-between text-xs text-blue-900 animate-in fade-in duration-150">
               <div className="flex items-center gap-2 truncate">
-                <Reply className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                <Reply className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                 <span className="truncate">
-                  Replying to <b className="text-[var(--accent)]">{replyingTo.sender_name}</b>: {replyingTo.content}
+                  Replying to <b className="text-blue-700">{replyingTo.sender_name}</b>: {replyingTo.content}
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => setReplyingTo(null)}
-                className="w-6 h-6 rounded-full hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center shrink-0 cursor-pointer"
+                className="w-6 h-6 rounded-full hover:bg-blue-100 flex items-center justify-center shrink-0 cursor-pointer text-blue-700"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
           )}
 
-          {/* Message Input Box with Voice Note Recording & WhatsApp Menus */}
-          <div className="px-4 py-2.5 border-t border-[#222d34] bg-[#202c33] relative shrink-0">
+          {/* Message Input Box with Voice Note Recording & Menus */}
+          <div className="px-4 py-3 border-t border-slate-200/80 bg-white relative shrink-0">
             {isBlocked ? (
-              <div className="p-3 text-center text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center justify-center gap-2">
+              <div className="p-3 text-center text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-center gap-2">
                 <span>You blocked this contact.</span>
                 <button
                   type="button"
@@ -1937,17 +1955,17 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     setIsBlocked(false);
                     onShowToast(`Unblocked @${activeFriend.connect_id}`);
                   }}
-                  className="font-bold underline text-rose-300 hover:text-white cursor-pointer ml-1"
+                  className="font-bold underline text-rose-700 hover:text-rose-900 cursor-pointer ml-1"
                 >
                   Unblock
                 </button>
               </div>
             ) : isRecordingVoice ? (
               /* Live Voice Recording UI */
-              <div className="h-10 px-4 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between gap-4 animate-in fade-in duration-200">
+              <div className="h-11 px-4 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-between gap-4 animate-in fade-in duration-200">
                 <div className="flex items-center gap-3">
                   <div className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
-                  <span className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
+                  <span className="text-xs font-semibold text-rose-600 flex items-center gap-1.5">
                     Recording Audio… {Math.floor(voiceRecordSeconds / 60)}:{voiceRecordSeconds % 60 < 10 ? '0' : ''}{voiceRecordSeconds % 60}
                   </span>
                 </div>
@@ -1957,7 +1975,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     type="button"
                     onClick={handleCancelVoiceRecord}
                     title="Discard voice note"
-                    className="px-3 py-1 rounded-lg bg-white/10 hover:bg-rose-500/20 text-rose-400 font-semibold text-xs flex items-center gap-1 transition-all cursor-pointer"
+                    className="px-3 py-1.5 rounded-lg bg-white border border-rose-200 hover:bg-rose-100 text-rose-600 font-semibold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-xs"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Cancel</span>
@@ -1967,7 +1985,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     type="button"
                     onClick={handleStopAndSendVoiceRecord}
                     title="Send voice note"
-                    className="px-3.5 py-1 rounded-lg bg-[#00a884] hover:bg-[#02906f] text-[#111b21] font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md"
+                    className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md shadow-blue-500/20"
                   >
                     <Send className="w-3.5 h-3.5" />
                     <span>Send</span>
@@ -1975,19 +1993,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 </div>
               </div>
             ) : (
-              /* Normal WhatsApp Input Box */
-              <form onSubmit={handleSendMessage} className="flex items-center gap-2.5 relative">
+              /* Normal Input Box */
+              <form onSubmit={handleSendMessage} className="flex items-center gap-2 relative">
                 {/* Emoji Picker Popover */}
                 {isEmojiPickerOpen && (
-                  <div className="emoji-picker-container absolute bottom-14 left-0 w-72 bg-[#202c33] border border-[#2e3e46] rounded-xl shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-150">
-                    <div className="text-[11px] font-semibold text-[#8696a0] mb-2 px-1">Emojis</div>
+                  <div className="emoji-picker-container absolute bottom-14 left-0 w-72 bg-white border border-slate-200 rounded-2xl shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-150">
+                    <div className="text-[11px] font-bold text-slate-500 mb-2 px-1">Emojis</div>
                     <div className="grid grid-cols-7 gap-1.5 max-h-48 overflow-y-auto p-1">
                       {['😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😗','😚','😋','😛','😜','🤪','😎','🤩','🥳','😏','😒','😞','😔','😟','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵','🥶','😱','😨','🤗','🤔','🤫','🤥','😶','😐','😑','😬','🙄','🥱','😴','😷','🤒','🤑','🤠','😈','👿','💩','👻','💀','👽','🤖','🎃','👏','👍','👎','👊','✊','🤛','🤜','🤞','✌️','🤟','🤘','👌','🤌','👈','👉','👆','👇','☝️','✋','🤚','🖐','👋','🤝','🙏','💪','🦾','❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💓','💗','💖','💘','💝','🔥','✨','🎉','🚀','💯','⭐','🌟','⚡','☀️','☕','🍔','🍕','🎉'].map(emoji => (
                         <button
                           key={emoji}
                           type="button"
                           onClick={() => handleSelectEmoji(emoji)}
-                          className="w-8 h-8 rounded-lg hover:bg-white/10 flex items-center justify-center text-base hover:scale-125 transition-transform cursor-pointer"
+                          className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-base hover:scale-125 transition-transform cursor-pointer"
                         >
                           {emoji}
                         </button>
@@ -1996,43 +2014,43 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   </div>
                 )}
 
-                {/* WhatsApp Circular Attachment Popover */}
+                {/* Circular Attachment Popover */}
                 {isAttachmentMenuOpen && (
-                  <div className="attachment-menu-container absolute bottom-14 left-8 bg-[#202c33] border border-[#2e3e46] rounded-xl shadow-2xl p-3 z-50 flex items-center gap-3 animate-in fade-in zoom-in-95 duration-150">
+                  <div className="attachment-menu-container absolute bottom-14 left-8 bg-white border border-slate-200 rounded-2xl shadow-2xl p-3 z-50 flex items-center gap-3 animate-in fade-in zoom-in-95 duration-150">
                     <button
                       type="button"
                       onClick={() => handleSelectAttachmentType('image')}
-                      className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-white/10 transition-colors group cursor-pointer"
+                      className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-slate-50 transition-colors group cursor-pointer"
                       title="Photos & Videos"
                     >
-                      <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-lg group-hover:scale-105 transition-transform">
+                      <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-md group-hover:scale-105 transition-transform">
                         <ImageIcon className="w-5 h-5" />
                       </div>
-                      <span className="text-[10px] text-[#d1d7db] font-medium">Photos</span>
+                      <span className="text-[10px] text-slate-700 font-semibold">Photos</span>
                     </button>
 
                     <button
                       type="button"
                       onClick={() => handleSelectAttachmentType('doc')}
-                      className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-white/10 transition-colors group cursor-pointer"
+                      className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-slate-50 transition-colors group cursor-pointer"
                       title="Documents & Files"
                     >
-                      <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-500 to-cyan-600 flex items-center justify-center text-white shadow-lg group-hover:scale-105 transition-transform">
+                      <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-sky-500 to-blue-600 flex items-center justify-center text-white shadow-md group-hover:scale-105 transition-transform">
                         <FileText className="w-5 h-5" />
                       </div>
-                      <span className="text-[10px] text-[#d1d7db] font-medium">Document</span>
+                      <span className="text-[10px] text-slate-700 font-semibold">Document</span>
                     </button>
 
                     <button
                       type="button"
                       onClick={() => handleSelectAttachmentType('audio')}
-                      className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-white/10 transition-colors group cursor-pointer"
+                      className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-slate-50 transition-colors group cursor-pointer"
                       title="Audio Note or File"
                     >
-                      <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center text-white shadow-lg group-hover:scale-105 transition-transform">
+                      <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-500 flex items-center justify-center text-white shadow-md group-hover:scale-105 transition-transform">
                         <Music className="w-5 h-5" />
                       </div>
-                      <span className="text-[10px] text-[#d1d7db] font-medium">Audio</span>
+                      <span className="text-[10px] text-slate-700 font-semibold">Audio</span>
                     </button>
                   </div>
                 )}
@@ -2047,7 +2065,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     setIsEmojiPickerOpen(false);
                   }}
                   title="Attach"
-                  className="attachment-menu-btn w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] text-[#8696a0] hover:text-[#d1d7db] transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                  className="w-10 h-10 rounded-xl flex items-center justify-center hover:bg-slate-100 text-slate-500 hover:text-blue-600 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
                 >
                   {isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Paperclip className="w-5 h-5" />}
                 </button>
@@ -2061,7 +2079,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     setIsAttachmentMenuOpen(false);
                   }}
                   title="Emoji"
-                  className="emoji-picker-btn w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] text-[#8696a0] hover:text-[#d1d7db] transition-colors cursor-pointer shrink-0"
+                  className="w-10 h-10 rounded-xl flex items-center justify-center hover:bg-slate-100 text-slate-500 hover:text-blue-600 transition-colors cursor-pointer shrink-0"
                 >
                   <Smile className="w-5 h-5" />
                 </button>
@@ -2070,25 +2088,25 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   type="text"
                   value={inputMessage}
                   onChange={handleInputChange}
-                  placeholder="Type a message"
-                  className="flex-1 h-10 px-4 rounded-lg bg-[#2a3942] text-xs text-[#d1d7db] placeholder-[#8696a0] focus:outline-none"
+                  placeholder="Type a message..."
+                  className="flex-1 h-11 px-4 rounded-2xl bg-slate-100/90 hover:bg-slate-100 focus:bg-white border border-slate-200/70 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all text-xs text-slate-900 placeholder-slate-400 focus:outline-none shadow-xs"
                 />
 
                 {inputMessage.trim() ? (
                   <button
                     type="submit"
-                    className="w-9 h-9 rounded-full flex items-center justify-center text-[#8696a0] hover:text-[#00a884] transition-colors cursor-pointer shrink-0"
+                    className="w-11 h-11 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/25 flex items-center justify-center transition-transform active:scale-95 cursor-pointer shrink-0"
                     title="Send"
                   >
-                    <Send className="w-5 h-5 text-[#00a884]" />
+                    <Send className="w-4.5 h-4.5 text-white" />
                   </button>
                 ) : (
-                  /* WhatsApp Mic Recording Trigger */
+                  /* Mic Recording Trigger */
                   <button
                     type="button"
                     onClick={handleStartVoiceRecord}
                     title="Voice note"
-                    className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] text-[#8696a0] hover:text-[#d1d7db] transition-colors cursor-pointer shrink-0"
+                    className="w-11 h-11 rounded-2xl bg-blue-50 hover:bg-blue-100 text-blue-600 flex items-center justify-center transition-transform active:scale-95 cursor-pointer shrink-0 shadow-xs"
                   >
                     <Mic className="w-5 h-5" />
                   </button>
@@ -2098,59 +2116,59 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           </div>
         </div>
       ) : (
-        /* Empty Right Pane when no friend is selected (Laptop/Desktop only) - WhatsApp Web Screen */
-        <div className="hidden md:flex flex-1 flex-col items-center justify-center text-center p-8 bg-[#222e35] text-[#8696a0] select-none border-b-[6px] border-[#25d366]">
-          <div className="w-24 h-24 rounded-full bg-[#202c33] flex items-center justify-center mb-6 shadow-inner text-[#00a884]">
-            <Laptop className="w-12 h-12" />
+        /* Empty Right Pane when no friend is selected (Laptop/Desktop only) - Executive Vertex Connect Screen */
+        <div className="hidden md:flex flex-1 flex-col items-center justify-center text-center p-8 bg-slate-50 text-slate-500 select-none border-b-[6px] border-blue-600">
+          <div className="w-20 h-20 rounded-3xl bg-blue-100/80 flex items-center justify-center mb-6 shadow-sm text-blue-600">
+            <Laptop className="w-10 h-10" />
           </div>
-          <h2 className="text-2xl font-light text-[#e9edef] mb-2 tracking-wide">
-            Download WhatsApp for Windows
+          <h2 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight">
+            Vertex Connect for Desktop
           </h2>
-          <p className="text-sm text-[#8696a0] max-w-md leading-relaxed mb-6">
-            Make calls, share your screen and get a faster experience when you download the Windows app.
+          <p className="text-xs text-slate-500 max-w-md leading-relaxed mb-6">
+            Make HD voice & video calls, share files, and get instant real-time team collaboration on all your devices.
           </p>
           <button
             type="button"
-            onClick={() => onShowToast('You are using Vertex Connect Web')}
-            className="px-6 py-2.5 rounded-full bg-[#00a884] hover:bg-[#02906f] text-[#111b21] font-semibold text-sm transition-transform hover:scale-105 shadow-lg cursor-pointer"
+            onClick={() => onShowToast('You are using Vertex Connect Web v2.4')}
+            className="px-6 py-2.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs transition-transform hover:scale-105 shadow-md shadow-blue-500/25 cursor-pointer"
           >
-            Get from Microsoft Store
+            Launch Vertex Desktop Experience
           </button>
-          <div className="mt-16 flex items-center gap-2 text-xs text-[#8696a0]">
+          <div className="mt-14 flex items-center gap-2 text-xs text-slate-400">
             <Lock className="w-3.5 h-3.5" />
-            <span>Your personal messages are end-to-end encrypted</span>
+            <span>Your personal messages are 256-bit end-to-end encrypted</span>
           </div>
         </div>
       )}
 
       {/* User Details Preview Modal */}
       {selectedUserPreview && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#071a36]/60 backdrop-blur-md">
-          <div className="w-full max-w-sm rounded-3xl glass-panel p-6 shadow-2xl bg-white/95 dark:bg-[#151c3b]/95 border border-white/40 dark:border-white/10 text-center relative animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm rounded-3xl p-6 shadow-2xl bg-white border border-slate-200 text-center relative animate-in zoom-in-95 duration-200 text-slate-800">
             <button
               type="button"
               onClick={() => setSelectedUserPreview(null)}
-              className="absolute right-4 top-4 p-1.5 rounded-lg text-[#71809a] hover:bg-black/5 dark:hover:bg-white/10"
+              className="absolute right-4 top-4 p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
             >
               <X className="w-4 h-4" />
             </button>
 
-            <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-[#8cf4ff] via-[#8d8cff] to-[#d6a2ff] flex items-center justify-center text-[#171a42] font-black text-2xl mx-auto shadow-xl mb-3">
+            <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-black text-2xl mx-auto shadow-lg mb-3">
               {selectedUserPreview.name.slice(0, 2).toUpperCase()}
             </div>
 
-            <h3 className="text-lg font-bold text-[#182044] dark:text-[#f1f3ff] leading-snug">
+            <h3 className="text-lg font-bold text-slate-900 leading-snug">
               {selectedUserPreview.name}
             </h3>
-            <span className="text-xs font-bold text-[var(--accent)] bg-[var(--accent)]/10 px-2 py-0.5 rounded-full inline-block mt-0.5 mb-2">
+            <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded-full inline-block mt-0.5 mb-2">
               @{selectedUserPreview.connect_id}
             </span>
 
-            <p className="text-xs text-[#6f7899] dark:text-[#aeb8dc] my-3 leading-relaxed">
+            <p className="text-xs text-slate-600 my-3 leading-relaxed">
               {selectedUserPreview.bio || 'Vertex Connect teammate.'}
             </p>
 
-            <div className="pt-3 border-t border-black/5 dark:border-white/10 flex items-center justify-center gap-2">
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-center gap-2">
               {selectedUserPreview.connection_status === 'accepted' ? (
                 <button
                   type="button"
@@ -2159,12 +2177,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     if (found) setActiveFriend(found);
                     setSelectedUserPreview(null);
                   }}
-                  className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#718bff] to-[#9b83f7] shadow-md cursor-pointer"
+                  className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-md shadow-blue-500/20 cursor-pointer"
                 >
                   Open Chat
                 </button>
               ) : selectedUserPreview.connection_status === 'pending' ? (
-                <span className="text-xs font-bold text-[#d17b22] py-2">
+                <span className="text-xs font-bold text-amber-600 py-2">
                   Request Pending
                 </span>
               ) : (
@@ -2174,7 +2192,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     handleSendConnectRequest(selectedUserPreview.connect_id);
                     setSelectedUserPreview(null);
                   }}
-                  className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#718bff] to-[#9b83f7] hover:brightness-110 flex items-center justify-center gap-2 shadow-md cursor-pointer"
+                  className="w-full py-2.5 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 cursor-pointer"
                 >
                   <UserPlus className="w-4 h-4" />
                   <span>Send Connection Request</span>
@@ -2185,16 +2203,16 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
       )}
 
-      {/* WHATSAPP MODAL 1: Contact Info Slide-Over Drawer */}
+      {/* MODAL 1: Contact Info Slide-Over Drawer */}
       {isContactInfoOpen && activeFriend && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-sm h-full bg-[#111b21] text-white flex flex-col border-l border-white/10 shadow-2xl animate-in slide-in-from-right duration-250 overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm h-full bg-white text-slate-800 flex flex-col border-l border-slate-200 shadow-2xl animate-in slide-in-from-right duration-250 overflow-y-auto">
             {/* Header */}
-            <div className="p-4 border-b border-white/10 flex items-center gap-3 sticky top-0 bg-[#111b21] z-10">
+            <div className="p-4 border-b border-slate-200 flex items-center gap-3 sticky top-0 bg-white z-10 text-slate-900">
               <button
                 type="button"
                 onClick={() => setIsContactInfoOpen(false)}
-                className="p-1.5 rounded-xl hover:bg-white/10 text-white/80 hover:text-white cursor-pointer"
+                className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-500 hover:text-slate-900 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2202,19 +2220,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             </div>
 
             {/* Profile Overview */}
-            <div className="p-6 flex flex-col items-center text-center border-b border-white/10 bg-[#0c1317]">
-              <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-[#128c7e] via-[#25d366] to-[#8ce7f2] flex items-center justify-center text-[#111b21] font-black text-3xl shadow-xl mb-3">
+            <div className="p-6 flex flex-col items-center text-center border-b border-slate-100 bg-slate-50">
+              <div className="w-24 h-24 rounded-3xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-black text-3xl shadow-xl mb-3">
                 {activeFriend.name.slice(0, 2).toUpperCase()}
               </div>
-              <h2 className="text-lg font-bold">{activeFriend.name}</h2>
-              <span className="text-xs text-[#25d366] font-semibold mt-0.5">@{activeFriend.connect_id}</span>
-              <span className="text-[11px] text-[#8696a0] mt-1 capitalize">{activeFriend.status}</span>
+              <h2 className="text-lg font-bold text-slate-900">{activeFriend.name}</h2>
+              <span className="text-xs text-blue-600 font-semibold mt-0.5 bg-blue-50 px-2.5 py-0.5 rounded-full">@{activeFriend.connect_id}</span>
+              <span className="text-[11px] text-slate-500 mt-1 capitalize">{activeFriend.status}</span>
             </div>
 
             {/* About / Bio */}
-            <div className="p-4 border-b border-white/10">
-              <span className="text-[11px] text-[#8696a0] uppercase font-bold tracking-wider">About</span>
-              <p className="text-xs text-white/90 mt-1 leading-relaxed">
+            <div className="p-4 border-b border-slate-100">
+              <span className="text-[11px] text-slate-400 uppercase font-bold tracking-wider">About</span>
+              <p className="text-xs text-slate-700 mt-1 leading-relaxed">
                 {activeFriend.bio || 'Vertex Connect member.'}
               </p>
             </div>
@@ -2225,16 +2243,16 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 setIsContactInfoOpen(false);
                 setIsMediaModalOpen(true);
               }}
-              className="p-4 border-b border-white/10 hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-between"
+              className="p-4 border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer flex items-center justify-between"
             >
               <div className="flex items-center gap-3">
-                <ImageIcon className="w-5 h-5 text-[#8ce7f2]" />
+                <ImageIcon className="w-5 h-5 text-blue-600" />
                 <div>
-                  <div className="text-xs font-semibold">Media, links and docs</div>
-                  <div className="text-[10px] text-[#8696a0]">{sharedMediaFiles.length} items shared</div>
+                  <div className="text-xs font-semibold text-slate-900">Media, links and docs</div>
+                  <div className="text-[10px] text-slate-400">{sharedMediaFiles.length} items shared</div>
                 </div>
               </div>
-              <ChevronRight className="w-4 h-4 text-[#8696a0]" />
+              <ChevronRight className="w-4 h-4 text-slate-400" />
             </div>
 
             {/* Starred Messages Shortcut */}
@@ -2243,29 +2261,29 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 setIsContactInfoOpen(false);
                 setIsStarredMessagesModalOpen(true);
               }}
-              className="p-4 border-b border-white/10 hover:bg-white/5 transition-colors cursor-pointer flex items-center justify-between"
+              className="p-4 border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer flex items-center justify-between"
             >
               <div className="flex items-center gap-3">
-                <Star className="w-5 h-5 text-amber-400" />
+                <Star className="w-5 h-5 text-amber-500 fill-amber-500" />
                 <div>
-                  <div className="text-xs font-semibold">Starred messages</div>
-                  <div className="text-[10px] text-[#8696a0]">{starredMessagesList.length} starred</div>
+                  <div className="text-xs font-semibold text-slate-900">Starred messages</div>
+                  <div className="text-[10px] text-slate-400">{starredMessagesList.length} starred</div>
                 </div>
               </div>
-              <ChevronRight className="w-4 h-4 text-[#8696a0]" />
+              <ChevronRight className="w-4 h-4 text-slate-400" />
             </div>
 
             {/* Privacy & Settings */}
-            <div className="p-4 border-b border-white/10 space-y-4">
+            <div className="p-4 border-b border-slate-100 space-y-4">
               <div
                 onClick={() => setIsMuteModalOpen(true)}
                 className="flex items-center justify-between cursor-pointer"
               >
                 <div className="flex items-center gap-3">
-                  <BellOff className="w-5 h-5 text-[#8696a0]" />
-                  <span className="text-xs font-medium">Mute notifications</span>
+                  <BellOff className="w-5 h-5 text-slate-500" />
+                  <span className="text-xs font-medium text-slate-800">Mute notifications</span>
                 </div>
-                <span className="text-xs text-[#25d366] font-semibold">{isMuted ? 'Muted' : 'Off'}</span>
+                <span className="text-xs text-blue-600 font-semibold">{isMuted ? 'Muted' : 'Off'}</span>
               </div>
 
               <div
@@ -2273,25 +2291,25 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 className="flex items-center justify-between cursor-pointer"
               >
                 <div className="flex items-center gap-3">
-                  <Clock className="w-5 h-5 text-[#8696a0]" />
-                  <span className="text-xs font-medium">Disappearing messages</span>
+                  <Clock className="w-5 h-5 text-slate-500" />
+                  <span className="text-xs font-medium text-slate-800">Disappearing messages</span>
                 </div>
-                <span className="text-xs text-[#25d366] font-semibold">{disappearingOption !== 'off' ? disappearingOption : 'Off'}</span>
+                <span className="text-xs text-blue-600 font-semibold">{disappearingOption !== 'off' ? disappearingOption : 'Off'}</span>
               </div>
             </div>
 
             {/* Encryption Notice */}
-            <div className="p-4 border-b border-white/10 flex items-start gap-3">
-              <Shield className="w-5 h-5 text-[#25d366] shrink-0 mt-0.5" />
+            <div className="p-4 border-b border-slate-100 flex items-start gap-3">
+              <Shield className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
               <div>
-                <div className="text-xs font-semibold">Encryption</div>
-                <p className="text-[10px] text-[#8696a0] mt-0.5 leading-relaxed">
+                <div className="text-xs font-semibold text-slate-900">256-bit Encryption</div>
+                <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">
                   Messages and calls are end-to-end encrypted. No one outside of this chat, not even Vertex Connect, can read or listen to them.
                 </p>
               </div>
             </div>
 
-            {/* Block / Report Actions */}
+            {/* Block Action */}
             <div className="p-4 mt-auto">
               <button
                 type="button"
@@ -2299,7 +2317,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   setIsBlocked(!isBlocked);
                   onShowToast(isBlocked ? `Unblocked @${activeFriend.connect_id}` : `Blocked @${activeFriend.connect_id}`);
                 }}
-                className="w-full py-2.5 rounded-xl text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                className="w-full py-2.5 rounded-xl text-xs font-bold bg-rose-50 hover:bg-rose-100 text-rose-600 flex items-center justify-center gap-2 transition-colors cursor-pointer"
               >
                 <Ban className="w-4 h-4" />
                 <span>{isBlocked ? `Unblock @${activeFriend.connect_id}` : `Block @${activeFriend.connect_id}`}</span>
@@ -2309,30 +2327,30 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
       )}
 
-      {/* WHATSAPP MODAL 2: Media, Links and Docs */}
+      {/* MODAL 2: Media, Links and Docs */}
       {isMediaModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-lg bg-[#111b21] rounded-3xl border border-white/10 shadow-2xl p-5 text-white flex flex-col max-h-[80vh]">
-            <div className="flex items-center justify-between pb-3 border-b border-white/10">
-              <h3 className="font-bold text-sm">Media, links, and docs</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-lg bg-white rounded-3xl border border-slate-200 shadow-2xl p-5 text-slate-800 flex flex-col max-h-[80vh]">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="font-bold text-sm text-slate-900">Media, links, and docs</h3>
               <button
                 type="button"
                 onClick={() => setIsMediaModalOpen(false)}
-                className="p-1 rounded-lg hover:bg-white/10 text-white/70 hover:text-white"
+                className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-2 py-3 border-b border-white/10 text-xs">
+            <div className="flex gap-2 py-3 border-b border-slate-100 text-xs">
               {(['media', 'docs', 'audio'] as const).map(tab => (
                 <button
                   key={tab}
                   type="button"
                   onClick={() => setMediaTab(tab)}
                   className={`px-3 py-1.5 rounded-xl font-semibold capitalize cursor-pointer transition-colors ${
-                    mediaTab === tab ? 'bg-[#128c7e] text-white' : 'text-[#8696a0] hover:bg-white/5'
+                    mediaTab === tab ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
                   }`}
                 >
                   {tab}
@@ -2344,7 +2362,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             <div className="flex-1 overflow-y-auto py-3">
               {mediaTab === 'media' && (
                 sharedMediaFiles.filter(m => m.file_type?.startsWith('image/') || (m.file_name && /\.(png|jpe?g|gif|webp)$/i.test(m.file_name))).length === 0 ? (
-                  <div className="text-center py-12 text-[#8696a0] text-xs">No media shared yet</div>
+                  <div className="text-center py-12 text-slate-400 text-xs">No media shared yet</div>
                 ) : (
                   <div className="grid grid-cols-3 gap-2">
                     {sharedMediaFiles
@@ -2355,7 +2373,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                           href={m.file_url}
                           target="_blank"
                           rel="noreferrer"
-                          className="aspect-square rounded-xl overflow-hidden border border-white/10 hover:opacity-80 transition-opacity bg-black/20"
+                          className="aspect-square rounded-xl overflow-hidden border border-slate-200 hover:opacity-80 transition-opacity bg-slate-100"
                         >
                           <img src={m.file_url} alt={m.file_name || 'Media'} className="w-full h-full object-cover" />
                         </a>
@@ -2366,24 +2384,24 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
               {mediaTab === 'docs' && (
                 sharedMediaFiles.filter(m => !m.file_type?.startsWith('image/') && !m.file_type?.startsWith('audio/') && !m.content?.startsWith('🎤')).length === 0 ? (
-                  <div className="text-center py-12 text-[#8696a0] text-xs">No documents shared yet</div>
+                  <div className="text-center py-12 text-slate-400 text-xs">No documents shared yet</div>
                 ) : (
                   <div className="space-y-2">
                     {sharedMediaFiles
                       .filter(m => !m.file_type?.startsWith('image/') && !m.file_type?.startsWith('audio/') && !m.content?.startsWith('🎤'))
                       .map(m => (
-                        <div key={m.id} className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between">
+                        <div key={m.id} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
                           <div className="flex items-center gap-2.5 min-w-0">
-                            <FileText className="w-5 h-5 text-[#8ce7f2] shrink-0" />
+                            <FileText className="w-5 h-5 text-blue-600 shrink-0" />
                             <div className="min-w-0">
-                              <span className="text-xs font-semibold block truncate">{m.file_name}</span>
-                              <span className="text-[10px] text-[#8696a0]">{m.file_size || 'Document'}</span>
+                              <span className="text-xs font-semibold block truncate text-slate-900">{m.file_name}</span>
+                              <span className="text-[10px] text-slate-400">{m.file_size || 'Document'}</span>
                             </div>
                           </div>
                           <a
                             href={m.file_url}
                             download={m.file_name}
-                            className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
+                            className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-blue-600 transition-colors shadow-xs"
                           >
                             <Download className="w-4 h-4" />
                           </a>
@@ -2395,18 +2413,18 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
               {mediaTab === 'audio' && (
                 sharedMediaFiles.filter(m => m.file_type?.startsWith('audio/') || m.content === '🎤 Voice note').length === 0 ? (
-                  <div className="text-center py-12 text-[#8696a0] text-xs">No voice notes shared yet</div>
+                  <div className="text-center py-12 text-slate-400 text-xs">No voice notes shared yet</div>
                 ) : (
                   <div className="space-y-2">
                     {sharedMediaFiles
                       .filter(m => m.file_type?.startsWith('audio/') || m.content === '🎤 Voice note')
                       .map(m => (
-                        <div key={m.id} className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between">
+                        <div key={m.id} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
                           <div className="flex items-center gap-2.5">
-                            <Music className="w-5 h-5 text-amber-400" />
+                            <Music className="w-5 h-5 text-amber-500" />
                             <div>
-                              <span className="text-xs font-semibold block">Voice note</span>
-                              <span className="text-[10px] text-[#8696a0]">{new Date(m.created_at).toLocaleString()}</span>
+                              <span className="text-xs font-semibold block text-slate-900">Voice note</span>
+                              <span className="text-[10px] text-slate-400">{new Date(m.created_at).toLocaleString()}</span>
                             </div>
                           </div>
                           {m.file_url && <audio src={m.file_url} controls className="h-8 max-w-[200px]" />}
@@ -2420,19 +2438,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
       )}
 
-      {/* WHATSAPP MODAL 3: Mute Notifications Dialog */}
+      {/* MODAL 3: Mute Notifications Dialog */}
       {isMuteModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-[#111b21] rounded-3xl border border-white/10 shadow-2xl p-6 text-white space-y-4">
-            <h3 className="font-bold text-sm">Mute notifications</h3>
-            <p className="text-xs text-[#8696a0]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
+            <h3 className="font-bold text-sm text-slate-900">Mute notifications</h3>
+            <p className="text-xs text-slate-500">
               Other participants will not see that you muted this chat. You will still receive notifications if you are mentioned.
             </p>
             <div className="space-y-2 text-xs">
               {['8 hours', '1 week', 'Always'].map((option, idx) => (
-                <label key={option} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/5 cursor-pointer">
-                  <input type="radio" name="muteDuration" defaultChecked={idx === 2} className="accent-[#25d366]" />
-                  <span>{option}</span>
+                <label key={option} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-50 cursor-pointer">
+                  <input type="radio" name="muteDuration" defaultChecked={idx === 2} className="accent-blue-600" />
+                  <span className="font-medium text-slate-700">{option}</span>
                 </label>
               ))}
             </div>
@@ -2440,7 +2458,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               <button
                 type="button"
                 onClick={() => setIsMuteModalOpen(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-[#8696a0] hover:text-white cursor-pointer"
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
               >
                 Cancel
               </button>
@@ -2451,7 +2469,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   setIsMuteModalOpen(false);
                   onShowToast('Notifications muted');
                 }}
-                className="px-4 py-2 rounded-xl text-xs font-bold bg-[#128c7e] hover:bg-[#25d366] text-white shadow-md cursor-pointer"
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/20 cursor-pointer"
               >
                 Mute
               </button>
@@ -2460,22 +2478,22 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
       )}
 
-      {/* WHATSAPP MODAL 4: Disappearing Messages Dialog */}
+      {/* MODAL 4: Disappearing Messages Dialog */}
       {isDisappearingModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-[#111b21] rounded-3xl border border-white/10 shadow-2xl p-6 text-white space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
             <div className="flex items-center gap-2">
-              <Clock className="w-5 h-5 text-[#8ce7f2]" />
-              <h3 className="font-bold text-sm">Disappearing messages</h3>
+              <Clock className="w-5 h-5 text-blue-600" />
+              <h3 className="font-bold text-sm text-slate-900">Disappearing messages</h3>
             </div>
-            <p className="text-xs text-[#8696a0]">
+            <p className="text-xs text-slate-500">
               Make messages in this chat disappear for more privacy. Anyone in the chat can change this setting.
             </p>
             <div className="space-y-2 text-xs">
               {(['24h', '7d', '90d', 'off'] as const).map(opt => (
                 <label
                   key={opt}
-                  className="flex items-center justify-between p-2.5 rounded-xl hover:bg-white/5 cursor-pointer"
+                  className="flex items-center justify-between p-2.5 rounded-xl hover:bg-slate-50 cursor-pointer font-medium text-slate-700"
                   onClick={() => setDisappearingOption(opt)}
                 >
                   <span className="capitalize">{opt === 'off' ? 'Off' : opt === '24h' ? '24 hours' : opt === '7d' ? '7 days' : '90 days'}</span>
@@ -2484,7 +2502,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     name="disappearing"
                     checked={disappearingOption === opt}
                     onChange={() => setDisappearingOption(opt)}
-                    className="accent-[#25d366]"
+                    className="accent-blue-600"
                   />
                 </label>
               ))}
@@ -2496,7 +2514,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   setIsDisappearingModalOpen(false);
                   onShowToast(disappearingOption === 'off' ? 'Disappearing messages turned off' : `Disappearing messages set to ${disappearingOption}`);
                 }}
-                className="px-4 py-2 rounded-xl text-xs font-bold bg-[#128c7e] hover:bg-[#25d366] text-white shadow-md cursor-pointer"
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/20 cursor-pointer"
               >
                 Done
               </button>
@@ -2505,26 +2523,26 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
       )}
 
-      {/* WHATSAPP MODAL 5: Wallpaper Selector */}
+      {/* MODAL 5: Wallpaper Selector */}
       {isWallpaperModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-[#111b21] rounded-3xl border border-white/10 shadow-2xl p-6 text-white space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Palette className="w-5 h-5 text-[#8ce7f2]" />
-                <h3 className="font-bold text-sm">Set chat wallpaper</h3>
+                <Palette className="w-5 h-5 text-blue-600" />
+                <h3 className="font-bold text-sm text-slate-900">Set chat wallpaper</h3>
               </div>
-              <button type="button" onClick={() => setIsWallpaperModalOpen(false)} className="p-1 rounded-lg hover:bg-white/10">
+              <button type="button" onClick={() => setIsWallpaperModalOpen(false)} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400">
                 <X className="w-4 h-4" />
               </button>
             </div>
             <div className="grid grid-cols-2 gap-3 pt-2">
               {[
-                { id: 'doodle', name: 'WhatsApp Doodle', class: 'bg-[#0b141a] bg-[radial-gradient(#128c7e_1px,transparent_1px)] [background-size:12px_12px]' },
-                { id: 'emerald', name: 'Dark Forest', class: 'bg-gradient-to-b from-[#0b141a] via-[#07241f] to-[#0b141a]' },
-                { id: 'navy', name: 'Midnight Navy', class: 'bg-gradient-to-b from-[#0b1329] via-[#101b3b] to-[#070b1a]' },
-                { id: 'dark', name: 'Pitch Dark', class: 'bg-[#111b21]' },
-                { id: 'default', name: 'Classic Clean', class: 'bg-white/20 dark:bg-white/5' }
+                { id: 'doodle', name: 'Vertex Matrix', class: 'bg-[#f8fafc] bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:16px_16px]' },
+                { id: 'navy', name: 'Azure Breeze', class: 'bg-gradient-to-b from-[#eff6ff] via-[#f8fafc] to-[#eff6ff]' },
+                { id: 'emerald', name: 'Soft Sage', class: 'bg-gradient-to-b from-[#f0fdf4] via-[#f8fafc] to-[#f0fdf4]' },
+                { id: 'dark', name: 'Midnight Slate', class: 'bg-[#0f172a]' },
+                { id: 'default', name: 'Pure White', class: 'bg-white' }
               ].map(w => (
                 <button
                   key={w.id}
@@ -2535,11 +2553,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     onShowToast(`Wallpaper set to ${w.name}`);
                   }}
                   className={`p-3 rounded-2xl border flex flex-col items-center gap-2 transition-transform hover:scale-105 cursor-pointer ${
-                    chatWallpaper === w.id ? 'border-[#25d366] shadow-lg shadow-[#25d366]/20' : 'border-white/10'
+                    chatWallpaper === w.id ? 'border-blue-600 shadow-md shadow-blue-500/20 ring-2 ring-blue-100' : 'border-slate-200'
                   }`}
                 >
-                  <div className={`w-full h-16 rounded-xl ${w.class}`} />
-                  <span className="text-[11px] font-semibold">{w.name}</span>
+                  <div className={`w-full h-16 rounded-xl border border-slate-200/60 ${w.class}`} />
+                  <span className="text-[11px] font-semibold text-slate-700">{w.name}</span>
                 </button>
               ))}
             </div>
@@ -2547,26 +2565,26 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
       )}
 
-      {/* WHATSAPP MODAL 6: Clear Chat Modal */}
+      {/* MODAL 6: Clear Chat Modal */}
       {isClearChatModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-xs bg-[#111b21] rounded-3xl border border-white/10 shadow-2xl p-6 text-white space-y-4">
-            <h3 className="font-bold text-sm">Clear this chat?</h3>
-            <p className="text-xs text-[#8696a0]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-xs bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
+            <h3 className="font-bold text-sm text-slate-900">Clear this chat?</h3>
+            <p className="text-xs text-slate-500">
               Messages will only be removed from this device and your chat history.
             </p>
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setIsClearChatModalOpen(false)}
-                className="px-3 py-1.5 rounded-xl text-xs font-semibold text-[#8696a0] hover:text-white cursor-pointer"
+                className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleClearChat}
-                className="px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-500 hover:bg-rose-600 text-white cursor-pointer"
+                className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white cursor-pointer shadow-sm"
               >
                 Clear chat
               </button>
@@ -2575,12 +2593,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
       )}
 
-      {/* WHATSAPP MODAL 7: Block Contact Modal */}
+      {/* MODAL 7: Block Contact Modal */}
       {isBlockModalOpen && activeFriend && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-xs bg-[#111b21] rounded-3xl border border-white/10 shadow-2xl p-6 text-white space-y-4">
-            <h3 className="font-bold text-sm">{isBlocked ? `Unblock @${activeFriend.connect_id}?` : `Block @${activeFriend.connect_id}?`}</h3>
-            <p className="text-xs text-[#8696a0]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-xs bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
+            <h3 className="font-bold text-sm text-slate-900">{isBlocked ? `Unblock @${activeFriend.connect_id}?` : `Block @${activeFriend.connect_id}?`}</h3>
+            <p className="text-xs text-slate-500">
               {isBlocked
                 ? 'Unblocked contacts will be able to call you and send you messages.'
                 : 'Blocked contacts will no longer be able to call you or send you messages.'}
@@ -2589,7 +2607,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               <button
                 type="button"
                 onClick={() => setIsBlockModalOpen(false)}
-                className="px-3 py-1.5 rounded-xl text-xs font-semibold text-[#8696a0] hover:text-white cursor-pointer"
+                className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
               >
                 Cancel
               </button>
@@ -2600,8 +2618,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   setIsBlockModalOpen(false);
                   onShowToast(isBlocked ? `Unblocked @${activeFriend.connect_id}` : `Blocked @${activeFriend.connect_id}`);
                 }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold text-white cursor-pointer ${
-                  isBlocked ? 'bg-[#128c7e] hover:bg-[#25d366]' : 'bg-rose-500 hover:bg-rose-600'
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold text-white cursor-pointer shadow-sm ${
+                  isBlocked ? 'bg-blue-600 hover:bg-blue-700' : 'bg-rose-600 hover:bg-rose-700'
                 }`}
               >
                 {isBlocked ? 'Unblock' : 'Block'}
@@ -2611,16 +2629,16 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
       )}
 
-      {/* WHATSAPP MODAL 8: New Group Modal */}
+      {/* MODAL 8: New Group Modal */}
       {isNewGroupModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-[#111b21] rounded-3xl border border-white/10 shadow-2xl p-6 text-white space-y-4 max-h-[85vh] flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4 max-h-[85vh] flex flex-col">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Users className="w-5 h-5 text-[#8ce7f2]" />
-                <h3 className="font-bold text-sm">New group</h3>
+                <Users className="w-5 h-5 text-blue-600" />
+                <h3 className="font-bold text-sm text-slate-900">New group</h3>
               </div>
-              <button type="button" onClick={() => setIsNewGroupModalOpen(false)} className="p-1 rounded-lg hover:bg-white/10">
+              <button type="button" onClick={() => setIsNewGroupModalOpen(false)} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -2630,16 +2648,16 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               value={newGroupName}
               onChange={(e) => setNewGroupName(e.target.value)}
               placeholder="Group subject..."
-              className="w-full h-10 px-3.5 rounded-xl bg-white/5 border border-white/10 text-xs text-white placeholder-[#8696a0] focus:outline-none focus:border-[#25d366]"
+              className="w-full h-10 px-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
             />
 
             <div>
-              <span className="text-[11px] font-bold text-[#8696a0] uppercase tracking-wider block mb-2">
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block mb-2">
                 Add participants ({selectedGroupMembers.length} selected)
               </span>
               <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
                 {friends.length === 0 ? (
-                  <div className="text-xs text-[#8696a0] py-4 text-center">No connections available</div>
+                  <div className="text-xs text-slate-400 py-4 text-center">No connections available</div>
                 ) : (
                   friends.map(f => {
                     const isSelected = selectedGroupMembers.includes(f.user_id);
@@ -2652,23 +2670,23 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                           );
                         }}
                         className={`p-2 rounded-xl flex items-center justify-between cursor-pointer transition-colors ${
-                          isSelected ? 'bg-white/10 border border-[#25d366]/40' : 'hover:bg-white/5'
+                          isSelected ? 'bg-blue-50 border border-blue-200' : 'hover:bg-slate-50'
                         }`}
                       >
                         <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-[#128c7e] to-[#25d366] flex items-center justify-center text-xs font-bold text-white">
+                          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-xs font-bold text-white shadow-xs">
                             {f.name.slice(0, 2).toUpperCase()}
                           </div>
                           <div>
-                            <span className="text-xs font-medium block">{f.name}</span>
-                            <span className="text-[10px] text-[#8696a0]">@{f.connect_id}</span>
+                            <span className="text-xs font-semibold block text-slate-900">{f.name}</span>
+                            <span className="text-[10px] text-slate-400">@{f.connect_id}</span>
                           </div>
                         </div>
                         <input
                           type="checkbox"
                           checked={isSelected}
                           onChange={() => {}}
-                          className="accent-[#25d366]"
+                          className="accent-blue-600"
                         />
                       </div>
                     );
@@ -2681,14 +2699,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               <button
                 type="button"
                 onClick={() => setIsNewGroupModalOpen(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-[#8696a0] hover:text-white cursor-pointer"
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleCreateGroup}
-                className="px-4 py-2 rounded-xl text-xs font-bold bg-[#128c7e] hover:bg-[#25d366] text-white shadow-md cursor-pointer"
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/20 cursor-pointer"
               >
                 Create Group
               </button>
@@ -2697,32 +2715,32 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
       )}
 
-      {/* WHATSAPP MODAL 9: Linked Devices Modal */}
+      {/* MODAL 9: Linked Devices Modal */}
       {isLinkedDevicesModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-[#111b21] rounded-3xl border border-white/10 shadow-2xl p-6 text-white space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Laptop className="w-5 h-5 text-[#8ce7f2]" />
-                <h3 className="font-bold text-sm">Linked devices</h3>
+                <Laptop className="w-5 h-5 text-blue-600" />
+                <h3 className="font-bold text-sm text-slate-900">Linked devices</h3>
               </div>
-              <button type="button" onClick={() => setIsLinkedDevicesModalOpen(false)} className="p-1 rounded-lg hover:bg-white/10">
+              <button type="button" onClick={() => setIsLinkedDevicesModalOpen(false)} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-xs text-[#8696a0] leading-relaxed">
-              Use Vertex Connect on Web, Desktop and other devices simultaneously without keeping your phone online.
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Use Vertex Connect on Web, Desktop and other devices simultaneously with end-to-end sync.
             </p>
 
-            <div className="p-3 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between">
+            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center text-[#8ce7f2]">
+                <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600 font-bold">
                   <Laptop className="w-5 h-5" />
                 </div>
                 <div>
-                  <span className="text-xs font-semibold block">Windows · Chrome</span>
-                  <span className="text-[10px] text-[#25d366] font-medium">Active now (This device)</span>
+                  <span className="text-xs font-semibold block text-slate-900">Windows · Chrome</span>
+                  <span className="text-[10px] text-emerald-600 font-medium">Active now (This device)</span>
                 </div>
               </div>
             </div>
@@ -2734,7 +2752,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   setIsLinkedDevicesModalOpen(false);
                   onShowToast('Logged out from all other sessions');
                 }}
-                className="w-full py-2.5 rounded-xl text-xs font-bold bg-white/10 hover:bg-rose-500/20 text-white hover:text-rose-400 transition-colors cursor-pointer"
+                className="w-full py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-rose-50 text-slate-700 hover:text-rose-600 transition-colors cursor-pointer"
               >
                 Log out from all other devices
               </button>
@@ -2743,42 +2761,42 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         </div>
       )}
 
-      {/* WHATSAPP MODAL 10: Starred Messages Modal */}
+      {/* MODAL 10: Starred Messages Modal */}
       {isStarredMessagesModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-[#111b21] rounded-3xl border border-white/10 shadow-2xl p-5 text-white flex flex-col max-h-[80vh]">
-            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl p-5 text-slate-800 flex flex-col max-h-[80vh]">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2">
-                <Star className="w-5 h-5 text-amber-400" />
-                <h3 className="font-bold text-sm">Starred messages</h3>
+                <Star className="w-5 h-5 text-amber-500 fill-amber-500" />
+                <h3 className="font-bold text-sm text-slate-900">Starred messages</h3>
               </div>
-              <button type="button" onClick={() => setIsStarredMessagesModalOpen(false)} className="p-1 rounded-lg hover:bg-white/10 text-white/70 hover:text-white">
+              <button type="button" onClick={() => setIsStarredMessagesModalOpen(false)} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto py-3 space-y-2">
               {starredMessagesList.length === 0 ? (
-                <div className="text-center py-12 text-[#8696a0] text-xs">
+                <div className="text-center py-12 text-slate-400 text-xs">
                   No starred messages yet. Hover over any message and click ⭐ to star it.
                 </div>
               ) : (
                 starredMessagesList.map(m => (
-                  <div key={m.id} className="p-3 rounded-2xl bg-white/5 border border-white/10 flex items-start justify-between gap-3">
+                  <div key={m.id} className="p-3 rounded-2xl bg-slate-50 border border-slate-200 flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs font-bold text-[#8ce7f2]">{m.sender_name}</span>
-                        <span className="text-[10px] text-[#8696a0]">{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <span className="text-xs font-bold text-blue-600">{m.sender_name}</span>
+                        <span className="text-[10px] text-slate-400">{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                       </div>
-                      <p className="text-xs text-white/90 break-words">{m.content || m.file_name || 'Attachment'}</p>
+                      <p className="text-xs text-slate-800 break-words">{m.content || m.file_name || 'Attachment'}</p>
                     </div>
                     <button
                       type="button"
                       onClick={() => handleToggleStar(m.id)}
-                      className="p-1 rounded-lg hover:bg-white/10 text-amber-400 cursor-pointer shrink-0"
+                      className="p-1 rounded-lg hover:bg-slate-200 text-amber-500 cursor-pointer shrink-0"
                       title="Unstar"
                     >
-                      <Star className="w-4 h-4 fill-amber-400" />
+                      <Star className="w-4 h-4 fill-amber-500" />
                     </button>
                   </div>
                 ))

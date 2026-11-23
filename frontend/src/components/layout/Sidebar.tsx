@@ -5,11 +5,7 @@ import {
   Users, 
   Phone, 
   Sparkles, 
-  FolderGit2, 
   Settings, 
-  CircleDot,
-  Radio,
-  Archive,
   User
 } from 'lucide-react';
 
@@ -27,14 +23,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
   const topDockItems = [
     { id: 'messages' as NavPage, label: 'Chats', icon: MessageSquare, badge: unreadCount },
     { id: 'meetings' as NavPage, label: 'Calls', icon: Phone },
-    { id: 'teams' as NavPage, label: 'Communities', icon: Users },
-    { id: 'intelligence' as NavPage, label: 'Meta AI', icon: Sparkles, isAi: true },
+    { id: 'teams' as NavPage, label: 'Teams & Groups', icon: Users },
+    { id: 'intelligence' as NavPage, label: 'Vertex AI', icon: Sparkles, isAi: true },
   ];
 
   return (
-    <aside className="hidden md:flex w-[64px] shrink-0 h-screen bg-[#202c33] text-[#aebac1] flex-col items-center justify-between py-3 border-r border-[#222d34] z-30 select-none">
-      {/* Top Section: WhatsApp Dock Navigation Icons */}
-      <div className="flex flex-col items-center gap-2 w-full">
+    <aside className="hidden md:flex w-[68px] shrink-0 h-screen bg-white text-slate-500 flex-col items-center justify-between py-4 border-r border-slate-200/80 z-30 select-none shadow-xs">
+      {/* Top Section: Vertex Brand Logo & Navigation Icons */}
+      <div className="flex flex-col items-center gap-3 w-full">
+        {/* Sleek Vertex Blue Logo Mark */}
+        <div 
+          onClick={() => onPageChange('messages')}
+          className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-black text-lg shadow-md shadow-blue-500/25 cursor-pointer hover:scale-105 transition-transform mb-2"
+          title="Vertex Connect"
+        >
+          V
+        </div>
+
         {topDockItems.map((item) => {
           const Icon = item.icon;
           const isActive = currentPage === item.id;
@@ -43,31 +48,31 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
               <button
                 type="button"
                 onClick={() => onPageChange(item.id)}
-                className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all cursor-pointer relative ${
+                className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-all cursor-pointer relative ${
                   isActive
-                    ? 'bg-[#374248] text-[#00a884]'
-                    : 'text-[#aebac1] hover:bg-[#2a3942] hover:text-[#d1d7db]'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-500/25 font-bold'
+                    : 'text-slate-500 hover:bg-blue-50 hover:text-blue-600'
                 }`}
                 title={item.label}
               >
                 {item.isAi ? (
-                  <div className="w-5 h-5 rounded-full bg-gradient-to-tr from-[#a855f7] via-[#ec4899] to-[#3b82f6] flex items-center justify-center text-white">
-                    <Sparkles className="w-3.5 h-3.5" />
+                  <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isActive ? 'text-white' : 'text-blue-600'}`}>
+                    <Sparkles className="w-4.5 h-4.5" />
                   </div>
                 ) : (
                   <Icon className="w-5 h-5" />
                 )}
 
-                {/* WhatsApp Style Unread Badge */}
+                {/* Unread Pill Badge */}
                 {item.badge && item.badge > 0 ? (
-                  <span className="absolute -top-1 -right-1 bg-[#25d366] text-[#111b21] font-bold text-[10px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center shadow-md">
+                  <span className="absolute -top-1 -right-1 bg-rose-500 text-white font-bold text-[10px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center shadow-sm">
                     {item.badge}
                   </span>
                 ) : null}
               </button>
 
               {/* Tooltip on right */}
-              <div className="absolute left-16 px-2.5 py-1 bg-[#111b21] text-white text-[11px] font-medium rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 border border-white/10">
+              <div className="absolute left-16 px-2.5 py-1 bg-slate-900 text-white text-[11px] font-semibold rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
                 {item.label}
               </div>
             </div>
@@ -75,23 +80,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
         })}
       </div>
 
-      {/* Bottom Section: Archived, Settings, User Avatar */}
-      <div className="flex flex-col items-center gap-2.5 w-full pb-2">
+      {/* Bottom Section: Settings & User Profile Avatar */}
+      <div className="flex flex-col items-center gap-3 w-full pb-1">
         {/* Settings button */}
         <div className="relative group flex items-center justify-center w-full">
           <button
             type="button"
             onClick={() => onPageChange('settings')}
-            className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
+            className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
               currentPage === 'settings'
-                ? 'bg-[#374248] text-[#00a884]'
-                : 'text-[#aebac1] hover:bg-[#2a3942] hover:text-[#d1d7db]'
+                ? 'bg-blue-600 text-white shadow-md shadow-blue-500/25 font-bold'
+                : 'text-slate-500 hover:bg-blue-50 hover:text-blue-600'
             }`}
             title="Settings"
           >
             <Settings className="w-5 h-5" />
           </button>
-          <div className="absolute left-16 px-2.5 py-1 bg-[#111b21] text-white text-[11px] font-medium rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 border border-white/10">
+          <div className="absolute left-16 px-2.5 py-1 bg-slate-900 text-white text-[11px] font-semibold rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
             Settings
           </div>
         </div>
@@ -101,12 +106,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
           <button
             type="button"
             onClick={() => onPageChange('settings')}
-            className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#128c7e] via-[#25d366] to-[#00a884] flex items-center justify-center text-[#111b21] font-bold text-xs ring-2 ring-transparent hover:ring-[#25d366] transition-all cursor-pointer shadow-md"
+            className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-bold text-xs ring-2 ring-slate-100 hover:ring-blue-500 transition-all cursor-pointer shadow-sm"
             title={user?.name || 'Profile'}
           >
-            {user?.name ? user.name.slice(0, 2).toUpperCase() : <User className="w-4 h-4 text-[#111b21]" />}
+            {user?.name ? user.name.slice(0, 2).toUpperCase() : <User className="w-4.5 h-4.5 text-white" />}
           </button>
-          <div className="absolute left-16 px-2.5 py-1 bg-[#111b21] text-white text-[11px] font-medium rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 border border-white/10">
+          <div className="absolute left-16 px-2.5 py-1 bg-slate-900 text-white text-[11px] font-semibold rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
             {user?.name || 'Profile'} (@{user?.connect_id})
           </div>
         </div>
@@ -119,13 +124,13 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({ currentPage, onPageCha
   const mobileNavItems = [
     { id: 'messages' as NavPage, label: 'Chats', icon: MessageSquare, badge: unreadCount },
     { id: 'meetings' as NavPage, label: 'Calls', icon: Phone },
-    { id: 'teams' as NavPage, label: 'Communities', icon: Users },
-    { id: 'intelligence' as NavPage, label: 'Meta AI', icon: Sparkles },
+    { id: 'teams' as NavPage, label: 'Teams', icon: Users },
+    { id: 'intelligence' as NavPage, label: 'AI', icon: Sparkles },
     { id: 'settings' as NavPage, label: 'Settings', icon: Settings },
   ];
 
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#202c33] border-t border-[#222d34] flex items-center justify-around px-2 py-1.5 shadow-2xl">
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/80 flex items-center justify-around px-2 py-1.5 shadow-xl">
       {mobileNavItems.map((item) => {
         const Icon = item.icon;
         const isActive = currentPage === item.id;
@@ -136,16 +141,16 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({ currentPage, onPageCha
             onClick={() => onPageChange(item.id)}
             className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all relative cursor-pointer ${
               isActive
-                ? 'text-[#00a884] scale-105'
-                : 'text-[#8696a0] hover:text-[#d1d7db]'
+                ? 'text-blue-600 font-bold scale-105'
+                : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            <div className={`p-1 rounded-xl ${isActive ? 'bg-[#374248]' : ''}`}>
+            <div className={`p-1.5 rounded-xl ${isActive ? 'bg-blue-50' : ''}`}>
               <Icon className="w-5 h-5" />
             </div>
-            <span className="text-[10px] font-semibold tracking-tight">{item.label}</span>
+            <span className="text-[10px] tracking-tight">{item.label}</span>
             {item.badge ? (
-              <span className="absolute top-1 right-2 w-4 h-4 rounded-full bg-[#25d366] text-[#111b21] text-[9px] font-bold flex items-center justify-center shadow-sm">
+              <span className="absolute top-1 right-2 w-4 h-4 rounded-full bg-rose-500 text-white text-[9px] font-bold flex items-center justify-center shadow-sm">
                 {item.badge}
               </span>
             ) : null}
