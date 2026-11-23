@@ -490,19 +490,48 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       }
 
       try {
-        const res = await fetch(`${API_BASE_URL}/api/v1/messages/${activeFriend.conversation_id}`);
+        const res = await fetch(`${API_BASE_URL}/api/v1/messages/${activeFriend.conversation_id}`, {
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache' },
+        });
         if (res.ok) {
           const data: ChatMessage[] = await res.json();
           setMessages((prev) => {
-            // Keep pending optimistic messages in place so message bubble NEVER vanishes while in-flight!
-            const pendingOptimistic = prev.filter(m => m.id.startsWith('temp_'));
-            const merged = [...data];
-            for (const opt of pendingOptimistic) {
-              const alreadyPresent = data.some(d => d.content === opt.content && d.sender_id === opt.sender_id);
-              if (!alreadyPresent && !merged.some(m => m.id === opt.id)) {
-                merged.push(opt);
+            if (!data) return prev;
+
+            const serverIds = new Set(data.map((d) => d.id));
+            const now = Date.now();
+
+            // Preserved messages:
+            // 1. Any optimistic message with id starting with 'temp_' (unless server returned exact match within 15s)
+            // 2. Any recent message sent by this user (within 60s) not yet present in server query
+            const preserved = prev.filter((m) => {
+              if (serverIds.has(m.id)) return false;
+
+              if (m.id.startsWith('temp_')) {
+                const tempTime = parseInt(m.id.replace('temp_', ''), 10) || now;
+                const serverHasIt = data.some(
+                  (d) =>
+                    d.sender_id === m.sender_id &&
+                    d.content === m.content &&
+                    Math.abs(new Date(d.created_at).getTime() - tempTime) < 15000
+                );
+                return !serverHasIt;
               }
-            }
+
+              const isMine = m.sender_id === user?.id || m.is_me;
+              if (isMine) {
+                const msgTime = new Date(m.created_at).getTime();
+                if (!isNaN(msgTime) && now - msgTime < 60000) {
+                  return true;
+                }
+              }
+
+              return false;
+            });
+
+            const merged = [...data, ...preserved];
+            merged.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
             if (prev.length === merged.length) {
               let changed = false;

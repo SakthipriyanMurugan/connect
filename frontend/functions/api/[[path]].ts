@@ -61,7 +61,12 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   const jsonResponse = (data: any, status = 200) => {
     return new Response(JSON.stringify(data), {
       status,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+      },
     });
   };
 
