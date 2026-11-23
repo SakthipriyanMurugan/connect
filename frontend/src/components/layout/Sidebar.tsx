@@ -3,13 +3,14 @@ import { useAuth } from '../../context/AuthContext';
 import { 
   MessageSquare, 
   Users, 
-  Video, 
+  Phone, 
   Sparkles, 
   FolderGit2, 
-  BarChart3, 
   Settings, 
-  ChevronDown, 
-  ShieldCheck 
+  CircleDot,
+  Radio,
+  Archive,
+  User
 } from 'lucide-react';
 
 export type NavPage = 'messages' | 'meetings' | 'intelligence' | 'teams' | 'files' | 'analytics' | 'settings';
@@ -20,104 +21,111 @@ interface SidebarProps {
   unreadCount?: number;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unreadCount = 0 }) => {
-  const { workspace } = useAuth();
+export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unreadCount = 3 }) => {
+  const { user } = useAuth();
 
-  const navItems = [
-    { id: 'messages' as NavPage, label: 'Messages', icon: MessageSquare, badge: unreadCount > 0 ? unreadCount : undefined },
-    { id: 'meetings' as NavPage, label: 'Meetings', icon: Video },
-    { id: 'intelligence' as NavPage, label: 'Call Intelligence', icon: Sparkles, tag: 'AI' },
-    { id: 'teams' as NavPage, label: 'Teams', icon: Users },
-    { id: 'files' as NavPage, label: 'Files', icon: FolderGit2 },
-    { id: 'analytics' as NavPage, label: 'Analytics', icon: BarChart3 },
-    { id: 'settings' as NavPage, label: 'Settings', icon: Settings },
+  const topDockItems = [
+    { id: 'messages' as NavPage, label: 'Chats', icon: MessageSquare, badge: unreadCount },
+    { id: 'meetings' as NavPage, label: 'Calls', icon: Phone },
+    { id: 'teams' as NavPage, label: 'Communities', icon: Users },
+    { id: 'intelligence' as NavPage, label: 'Meta AI', icon: Sparkles, isAi: true },
   ];
 
   return (
-    <aside className="hidden md:flex w-[250px] shrink-0 min-h-screen bg-gradient-to-b from-[#111638]/95 via-[#1a2455]/90 to-[#25245c]/90 text-[#dbe8ff] p-5 flex flex-col gap-5 border-r border-white/20 shadow-2xl backdrop-blur-2xl z-20">
-      {/* Brand */}
-      <div className="flex items-center gap-3 px-2 pt-1 pb-2">
-        <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#8ff5ff] via-[#8298ff] to-[#d6a0ff] flex items-center justify-center text-[#171d4c] text-2xl font-black shadow-lg shadow-[#8b9bff]/40">
-          V
-        </div>
-        <div>
-          <span className="font-extrabold tracking-widest text-sm text-white block leading-tight">VERTEX</span>
-          <span className="font-extrabold tracking-widest text-sm text-[#8ff5ff] block leading-tight">CONNECT</span>
-        </div>
-      </div>
-
-      {/* Workspace Switcher */}
-      <button 
-        type="button"
-        className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/20 text-white text-xs font-semibold backdrop-blur-md transition-all text-left"
-      >
-        <span className="truncate">{workspace?.name || 'Workspace'}</span>
-        <ChevronDown className="w-3.5 h-3.5 text-[#8ff5ff] shrink-0" />
-      </button>
-
-      {/* Navigation */}
-      <nav className="flex flex-col gap-1.5 flex-1">
-        {navItems.map((item) => {
+    <aside className="hidden md:flex w-[64px] shrink-0 h-screen bg-[#202c33] text-[#aebac1] flex-col items-center justify-between py-3 border-r border-[#222d34] z-30 select-none">
+      {/* Top Section: WhatsApp Dock Navigation Icons */}
+      <div className="flex flex-col items-center gap-2 w-full">
+        {topDockItems.map((item) => {
           const Icon = item.icon;
           const isActive = currentPage === item.id;
           return (
-            <button
-              key={item.id}
-              onClick={() => onPageChange(item.id)}
-              className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all group cursor-pointer ${
-                isActive
-                  ? 'bg-gradient-to-r from-[#879aff]/40 to-[#c9a8ff]/20 text-white border border-[#c5d2ff]/40 shadow-lg translate-x-1'
-                  : 'text-[#c8d6eb] hover:bg-white/10 hover:text-white border border-transparent'
-              }`}
-            >
-              <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-[#8ff5ff]' : 'text-[#a3b3cc] group-hover:text-white'}`} />
-              <span className="nav-btn-text flex-1 text-left">{item.label}</span>
-              {item.badge ? (
-                <span className="nav-btn-text bg-[#f04454] text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm">
-                  {item.badge}
-                </span>
-              ) : null}
-              {item.tag ? (
-                <span className="nav-btn-text bg-gradient-to-r from-[#8ff5ff] to-[#a9a0ff] text-[#111638] text-[9px] font-extrabold px-1.5 py-0.5 rounded shadow-sm">
-                  {item.tag}
-                </span>
-              ) : null}
-            </button>
+            <div key={item.id} className="relative group flex items-center justify-center w-full">
+              <button
+                type="button"
+                onClick={() => onPageChange(item.id)}
+                className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all cursor-pointer relative ${
+                  isActive
+                    ? 'bg-[#374248] text-[#00a884]'
+                    : 'text-[#aebac1] hover:bg-[#2a3942] hover:text-[#d1d7db]'
+                }`}
+                title={item.label}
+              >
+                {item.isAi ? (
+                  <div className="w-5 h-5 rounded-full bg-gradient-to-tr from-[#a855f7] via-[#ec4899] to-[#3b82f6] flex items-center justify-center text-white">
+                    <Sparkles className="w-3.5 h-3.5" />
+                  </div>
+                ) : (
+                  <Icon className="w-5 h-5" />
+                )}
+
+                {/* WhatsApp Style Unread Badge */}
+                {item.badge && item.badge > 0 ? (
+                  <span className="absolute -top-1 -right-1 bg-[#25d366] text-[#111b21] font-bold text-[10px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center shadow-md">
+                    {item.badge}
+                  </span>
+                ) : null}
+              </button>
+
+              {/* Tooltip on right */}
+              <div className="absolute left-16 px-2.5 py-1 bg-[#111b21] text-white text-[11px] font-medium rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 border border-white/10">
+                {item.label}
+              </div>
+            </div>
           );
         })}
-      </nav>
+      </div>
 
-      {/* Bottom Status Card */}
-      <div className="mt-auto pt-3 border-t border-white/10 flex flex-col gap-3">
-        <div className="rounded-2xl p-3.5 bg-gradient-to-br from-white/10 to-[#b7c4ff]/10 border border-white/20 backdrop-blur-md">
-          <div className="flex items-center gap-2 mb-1 text-xs font-bold text-white">
-            <ShieldCheck className="w-4 h-4 text-[#8ff5ff]" />
-            <span>Secure Communication</span>
+      {/* Bottom Section: Archived, Settings, User Avatar */}
+      <div className="flex flex-col items-center gap-2.5 w-full pb-2">
+        {/* Settings button */}
+        <div className="relative group flex items-center justify-center w-full">
+          <button
+            type="button"
+            onClick={() => onPageChange('settings')}
+            className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
+              currentPage === 'settings'
+                ? 'bg-[#374248] text-[#00a884]'
+                : 'text-[#aebac1] hover:bg-[#2a3942] hover:text-[#d1d7db]'
+            }`}
+            title="Settings"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
+          <div className="absolute left-16 px-2.5 py-1 bg-[#111b21] text-white text-[11px] font-medium rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 border border-white/10">
+            Settings
           </div>
-          <p className="text-[#aebfda] text-[11px] leading-relaxed m-0">
-            Encrypted WebRTC & Live AI Intelligence.
-          </p>
         </div>
 
-        <div className="text-[10px] text-[#93a8c8] px-1 leading-normal">
-          JM Vertex Technologies · v1.0
+        {/* Profile Avatar */}
+        <div className="relative group flex items-center justify-center w-full">
+          <button
+            type="button"
+            onClick={() => onPageChange('settings')}
+            className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#128c7e] via-[#25d366] to-[#00a884] flex items-center justify-center text-[#111b21] font-bold text-xs ring-2 ring-transparent hover:ring-[#25d366] transition-all cursor-pointer shadow-md"
+            title={user?.name || 'Profile'}
+          >
+            {user?.name ? user.name.slice(0, 2).toUpperCase() : <User className="w-4 h-4 text-[#111b21]" />}
+          </button>
+          <div className="absolute left-16 px-2.5 py-1 bg-[#111b21] text-white text-[11px] font-medium rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 border border-white/10">
+            {user?.name || 'Profile'} (@{user?.connect_id})
+          </div>
         </div>
       </div>
     </aside>
   );
 };
 
-export const MobileBottomNav: React.FC<SidebarProps> = ({ currentPage, onPageChange, unreadCount = 0 }) => {
+export const MobileBottomNav: React.FC<SidebarProps> = ({ currentPage, onPageChange, unreadCount = 3 }) => {
   const mobileNavItems = [
-    { id: 'messages' as NavPage, label: 'Chats', icon: MessageSquare, badge: unreadCount > 0 ? unreadCount : undefined },
-    { id: 'meetings' as NavPage, label: 'Calls', icon: Video },
-    { id: 'intelligence' as NavPage, label: 'AI', icon: Sparkles },
-    { id: 'teams' as NavPage, label: 'Teams', icon: Users },
+    { id: 'messages' as NavPage, label: 'Chats', icon: MessageSquare, badge: unreadCount },
+    { id: 'meetings' as NavPage, label: 'Calls', icon: Phone },
+    { id: 'teams' as NavPage, label: 'Communities', icon: Users },
+    { id: 'intelligence' as NavPage, label: 'Meta AI', icon: Sparkles },
     { id: 'settings' as NavPage, label: 'Settings', icon: Settings },
   ];
 
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#111638]/95 border-t border-white/20 backdrop-blur-2xl flex items-center justify-around px-2 py-1.5 shadow-2xl">
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#202c33] border-t border-[#222d34] flex items-center justify-around px-2 py-1.5 shadow-2xl">
       {mobileNavItems.map((item) => {
         const Icon = item.icon;
         const isActive = currentPage === item.id;
@@ -128,16 +136,18 @@ export const MobileBottomNav: React.FC<SidebarProps> = ({ currentPage, onPageCha
             onClick={() => onPageChange(item.id)}
             className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all relative cursor-pointer ${
               isActive
-                ? 'text-[#8ff5ff] scale-105'
-                : 'text-[#9cb2d6] hover:text-white'
+                ? 'text-[#00a884] scale-105'
+                : 'text-[#8696a0] hover:text-[#d1d7db]'
             }`}
           >
-            <div className={`p-1 rounded-xl ${isActive ? 'bg-[var(--accent)]/20' : ''}`}>
+            <div className={`p-1 rounded-xl ${isActive ? 'bg-[#374248]' : ''}`}>
               <Icon className="w-5 h-5" />
             </div>
-            <span className="text-[10px] font-bold tracking-tight">{item.label}</span>
+            <span className="text-[10px] font-semibold tracking-tight">{item.label}</span>
             {item.badge ? (
-              <span className="absolute top-1 right-2.5 w-2 h-2 rounded-full bg-[#f04454] ring-2 ring-[#111638]" />
+              <span className="absolute top-1 right-2 w-4 h-4 rounded-full bg-[#25d366] text-[#111b21] text-[9px] font-bold flex items-center justify-center shadow-sm">
+                {item.badge}
+              </span>
             ) : null}
           </button>
         );

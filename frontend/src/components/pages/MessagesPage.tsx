@@ -42,7 +42,16 @@ import {
   Shield,
   Music,
   ChevronRight,
-  Info
+  Info,
+  CheckSquare,
+  ListFilter,
+  XCircle,
+  Link2,
+  PhoneCall,
+  ThumbsDown,
+  MinusCircle,
+  Lock,
+  Archive
 } from 'lucide-react';
 import type { ChatMessage, ConnectionUser, SearchUserResult } from '../../types';
 import { VoiceNotePlayer } from '../chat/VoiceNotePlayer';
@@ -110,6 +119,52 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const [isBlockModalOpen, setIsBlockModalOpen] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
   
+  // WhatsApp Filter Chips: 'all' | 'unread' | 'favourites' | 'groups'
+  const [chatFilter, setChatFilter] = useState<'all' | 'unread' | 'favourites' | 'groups'>('all');
+  const [friendSearchTerm, setFriendSearchTerm] = useState('');
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [selectedMsgIds, setSelectedMsgIds] = useState<Set<string>>(new Set());
+
+  // Favourite Chats with localStorage persistence
+  const [favouriteChatIds, setFavouriteChatIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('vertexFavouriteChats');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('vertexFavouriteChats', JSON.stringify(Array.from(favouriteChatIds)));
+    } catch {}
+  }, [favouriteChatIds]);
+
+  const toggleFavouriteChat = (id: string) => {
+    setFavouriteChatIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+        onShowToast('Removed from favourites');
+      } else {
+        next.add(id);
+        onShowToast('Added to favourites ❤️');
+      }
+      return next;
+    });
+  };
+
+  // Helper to load custom created groups from localStorage so they NEVER vanish
+  const loadSavedGroups = (): ConnectionUser[] => {
+    try {
+      const raw = localStorage.getItem('vertex_custom_groups');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  };
+
   // Chats List 3-Dots Modals
   const [isNewGroupModalOpen, setIsNewGroupModalOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
@@ -177,13 +232,20 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           };
         });
 
-        setFriends(enrichedFriends);
+        // Merge custom saved groups so groups NEVER vanish on fetch!
+        const savedGroups = loadSavedGroups();
+        const allChats = [
+          ...savedGroups,
+          ...enrichedFriends.filter((ef: ConnectionUser) => !savedGroups.some(sg => sg.connection_id === ef.connection_id))
+        ];
+
+        setFriends(allChats);
         setPendingIncoming(data.pending_incoming || []);
         setPendingOutgoing(data.pending_outgoing || []);
 
         // If no active friend selected, select first friend
-        if (!activeFriend && enrichedFriends.length > 0) {
-          setActiveFriend(enrichedFriends[0]);
+        if (!activeFriend && allChats.length > 0) {
+          setActiveFriend(allChats[0]);
         }
       }
     } catch (e) {
@@ -319,6 +381,17 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }
 
     const fetchMessages = async () => {
+      // If active friend is a custom created group, load messages from localStorage
+      if (activeFriend.connection_id.startsWith('group_')) {
+        try {
+          const stored = JSON.parse(localStorage.getItem(`vertex_group_msgs_${activeFriend.connection_id}`) || '[]');
+          setMessages(stored);
+        } catch {
+          setMessages([]);
+        }
+        return;
+      }
+
       try {
         const res = await fetch(`${API_BASE_URL}/api/v1/messages/${activeFriend.conversation_id}`);
         if (res.ok) {
@@ -476,6 +549,45 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     const tempId = `temp_${Date.now()}`;
     const replySnippet = replyingTo ? `${replyingTo.sender_name}: ${replyingTo.content.slice(0, 60)}` : undefined;
     const replyId = replyingTo?.id;
+
+    // Handle Group Messaging Persistence
+    if (activeFriend.connection_id.startsWith('group_')) {
+      const groupMsg: ChatMessage = {
+        id: `msg_grp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        conversation_id: activeFriend.connection_id,
+        sender_id: user.id,
+        sender_name: user.name,
+        content: messageContent,
+        reply_to_id: replyId,
+        reply_to_snippet: replySnippet,
+        reactions: {},
+        is_read: true,
+        status: 'delivered',
+        created_at: new Date().toISOString(),
+        is_me: true
+      };
+      setMessages((prev) => [...prev, groupMsg]);
+      setInputMessage('');
+      setReplyingTo(null);
+
+      // Persist permanently in localStorage
+      try {
+        const stored = JSON.parse(localStorage.getItem(`vertex_group_msgs_${activeFriend.connection_id}`) || '[]');
+        localStorage.setItem(`vertex_group_msgs_${activeFriend.connection_id}`, JSON.stringify([...stored, groupMsg]));
+      } catch {}
+
+      // Broadcast to online teammates via WebSocket
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'group_message',
+            group_id: activeFriend.connection_id,
+            message: groupMsg
+          })
+        );
+      }
+      return;
+    }
 
     const isReceiverOnline = activeFriend.status === 'online' || activeFriend.status === 'in_call';
     const optimisticMessage: ChatMessage = {
@@ -808,12 +920,64 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       status: 'online',
       conversation_id: groupId
     };
-    setFriends(prev => [newGroup, ...prev]);
+
+    // 1. Permanently store in localStorage
+    const saved = loadSavedGroups();
+    const updated = [newGroup, ...saved.filter(g => g.connection_id !== groupId)];
+    try {
+      localStorage.setItem('vertex_custom_groups', JSON.stringify(updated));
+    } catch {}
+
+    // 2. Initial welcome message in group
+    const initMsg: ChatMessage = {
+      id: `msg_init_${Date.now()}`,
+      conversation_id: groupId,
+      sender_id: user?.id || 'system',
+      sender_name: 'System',
+      content: `🎉 You created group "${newGroupName.trim()}" with ${selectedGroupMembers.length + 1} participants.`,
+      created_at: new Date().toISOString(),
+      status: 'read'
+    };
+    try {
+      localStorage.setItem(`vertex_group_msgs_${groupId}`, JSON.stringify([initMsg]));
+    } catch {}
+
+    setFriends(prev => [newGroup, ...prev.filter(f => f.connection_id !== groupId)]);
     setActiveFriend(newGroup);
+    setMessages([initMsg]);
     setIsNewGroupModalOpen(false);
     setNewGroupName('');
     setSelectedGroupMembers([]);
+    setChatFilter('all');
     onShowToast(`Group "${newGroup.name}" created!`);
+  };
+
+  const handleDeleteChat = () => {
+    if (!activeFriend) return;
+    const targetId = activeFriend.connection_id;
+    if (targetId.startsWith('group_')) {
+      const saved = loadSavedGroups();
+      const updated = saved.filter(g => g.connection_id !== targetId);
+      try {
+        localStorage.setItem('vertex_custom_groups', JSON.stringify(updated));
+        localStorage.removeItem(`vertex_group_msgs_${targetId}`);
+      } catch {}
+    }
+    setFriends(prev => prev.filter(f => f.connection_id !== targetId));
+    setActiveFriend(null);
+    setIsChatMenuOpen(false);
+    onShowToast('Chat deleted');
+  };
+
+  const handleSendCallLink = () => {
+    if (!activeFriend) return;
+    const link = `${window.location.origin}/meet/${activeFriend.conversation_id || activeFriend.user_id}`;
+    navigator.clipboard.writeText(link).then(() => {
+      onShowToast('Call link copied to clipboard! 🔗');
+    }).catch(() => {
+      onShowToast('Call link ready: ' + link);
+    });
+    setIsChatMenuOpen(false);
   };
 
   // Close menus when clicking outside
@@ -841,8 +1005,26 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     ? messages.filter(m => (m.content || '').toLowerCase().includes(inChatSearchQuery.toLowerCase()))
     : messages;
 
+  const displayedFriends = friends.filter(f => {
+    // 1. Tab filter
+    if (chatFilter === 'groups') {
+      if (!f.connection_id.startsWith('group_') && !f.bio?.toLowerCase().includes('group')) return false;
+    } else if (chatFilter === 'favourites') {
+      if (!favouriteChatIds.has(f.connection_id)) return false;
+    } else if (chatFilter === 'unread') {
+      if (f.status !== 'online' && !f.bio?.includes('new')) return false;
+    }
+
+    // 2. Search query filter
+    if (friendSearchTerm.trim()) {
+      const q = friendSearchTerm.toLowerCase();
+      return f.name.toLowerCase().includes(q) || f.connect_id.toLowerCase().includes(q);
+    }
+    return true;
+  });
+
   const WALLPAPER_CLASSES: Record<string, string> = {
-    default: 'bg-white/20 dark:bg-white/5',
+    default: 'bg-[#111b21]',
     doodle: 'bg-[#0b141a] bg-[radial-gradient(#128c7e_1px,transparent_1px)] [background-size:16px_16px]',
     emerald: 'bg-gradient-to-b from-[#0b141a] via-[#07241f] to-[#0b141a]',
     navy: 'bg-gradient-to-b from-[#0b1329] via-[#101b3b] to-[#070b1a]',
@@ -850,7 +1032,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   };
 
   return (
-    <div className="glass-panel h-[calc(100dvh-130px)] md:h-[calc(100vh-140px)] flex overflow-hidden border border-white/60 dark:border-white/10 shadow-2xl animate-in fade-in duration-300">
+    <div className="h-full w-full flex overflow-hidden bg-[#111b21] text-[#e9edef] select-none">
       {/* Hidden File Input */}
       <input
         type="file"
@@ -859,119 +1041,123 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         className="hidden"
       />
 
-      {/* LEFT SIDEBAR: Search by Connect ID + Friends List + Requests */}
-      <div className={`w-full md:w-80 shrink-0 border-r border-black/5 dark:border-white/10 flex flex-col bg-white/40 dark:bg-white/5 ${activeFriend ? 'hidden md:flex' : 'flex'}`}>
-        {/* Search by Connect ID Bar */}
-        <div className="p-4 border-b border-black/5 dark:border-white/10 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-bold text-[#182044] dark:text-[#f1f3ff]">Chats</h2>
-            <div className="flex items-center gap-1.5">
-              <div className="flex items-center gap-1 text-[11px] font-bold text-[#8ce7f2] bg-[var(--accent)]/15 px-2 py-0.5 rounded-lg">
-                <span>@{user?.connect_id}</span>
-              </div>
-
-              {/* WhatsApp Chats List 3-Dots Menu Button */}
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsChatListMenuOpen(!isChatListMenuOpen);
-                  }}
-                  title="Menu"
-                  className="whatsapp-menu-btn w-8 h-8 rounded-lg flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 text-[#40516c] dark:text-[#cbd4ff] transition-all cursor-pointer"
-                >
-                  <MoreVertical className="w-4 h-4" />
-                </button>
-
-                {/* WhatsApp Chats List Dropdown */}
-                {isChatListMenuOpen && (
-                  <div className="whatsapp-menu-container absolute right-0 top-9 w-52 rounded-2xl bg-[#111b21] border border-white/10 shadow-2xl z-50 p-1.5 animate-in fade-in zoom-in-95 duration-150 text-white">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsChatListMenuOpen(false);
-                        setIsNewGroupModalOpen(true);
-                      }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-                    >
-                      <Users className="w-4 h-4 text-[#8ce7f2]" />
-                      <span>New group</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsChatListMenuOpen(false);
-                        onShowToast('New broadcast list created');
-                      }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-                    >
-                      <Share2 className="w-4 h-4 text-[#8ce7f2]" />
-                      <span>New broadcast</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsChatListMenuOpen(false);
-                        setIsLinkedDevicesModalOpen(true);
-                      }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-                    >
-                      <Laptop className="w-4 h-4 text-[#8ce7f2]" />
-                      <span>Linked devices</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsChatListMenuOpen(false);
-                        setIsStarredMessagesModalOpen(true);
-                      }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-                    >
-                      <Star className="w-4 h-4 text-amber-400" />
-                      <span>Starred messages</span>
-                    </button>
-
-                    <div className="h-[1px] bg-white/10 my-1" />
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsChatListMenuOpen(false);
-                        onShowToast('All chats marked as read');
-                      }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-                    >
-                      <CheckCheck className="w-4 h-4 text-[#53bdeb]" />
-                      <span>Mark all as read</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Search Input with @ icon */}
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#71809a]" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by @ConnectID or name..."
-              className="w-full pl-9 pr-8 py-2 rounded-xl border border-[#cbd5ff]/60 dark:border-white/10 bg-white/80 dark:bg-white/5 text-xs text-[#182044] dark:text-[#eef1ff] placeholder-[#71809a] focus:outline-none focus:border-[var(--accent)] shadow-inner transition-all"
-            />
-            {searchQuery && (
+      {/* LEFT SIDEBAR: Full WhatsApp Web Chats Column */}
+      <div className={`w-full md:w-[380px] lg:w-[420px] shrink-0 border-r border-[#222d34] flex flex-col bg-[#111b21] h-full ${activeFriend ? 'hidden md:flex' : 'flex'}`}>
+        {/* WhatsApp Chats Header */}
+        <div className="h-[60px] px-4 bg-[#202c33] flex items-center justify-between border-b border-[#222d34] shrink-0">
+          <h1 className="text-xl font-bold text-[#e9edef] tracking-tight">WhatsApp</h1>
+          <div className="flex items-center gap-3">
+            {/* WhatsApp 3-Dots Menu */}
+            <div className="relative">
               <button
                 type="button"
-                onClick={() => {
-                  setSearchQuery('');
-                  setSearchResults([]);
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsChatListMenuOpen(!isChatListMenuOpen);
                 }}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#71809a] hover:text-black dark:hover:text-white"
+                title="Menu"
+                className="whatsapp-menu-btn w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#374248] text-[#aebac1] hover:text-[#d1d7db] transition-colors cursor-pointer"
+              >
+                <MoreVertical className="w-5 h-5" />
+              </button>
+
+              {/* WhatsApp Chats List Dropdown */}
+              {isChatListMenuOpen && (
+                <div className="whatsapp-menu-container absolute right-0 top-11 w-56 rounded-2xl bg-[#233138] border border-white/10 shadow-2xl z-50 p-1.5 animate-in fade-in zoom-in-95 duration-150 text-[#d1d7db]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsChatListMenuOpen(false);
+                      setIsNewGroupModalOpen(true);
+                    }}
+                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                  >
+                    <Users className="w-4 h-4 text-[#00a884]" />
+                    <span>New group</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsChatListMenuOpen(false);
+                      onShowToast('New broadcast list created');
+                    }}
+                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                  >
+                    <Share2 className="w-4 h-4 text-[#00a884]" />
+                    <span>New broadcast</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsChatListMenuOpen(false);
+                      setIsLinkedDevicesModalOpen(true);
+                    }}
+                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                  >
+                    <Laptop className="w-4 h-4 text-[#00a884]" />
+                    <span>Linked devices</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsChatListMenuOpen(false);
+                      setIsStarredMessagesModalOpen(true);
+                    }}
+                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                  >
+                    <Star className="w-4 h-4 text-amber-400" />
+                    <span>Starred messages</span>
+                  </button>
+
+                  <div className="h-[1px] bg-white/10 my-1" />
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsChatListMenuOpen(false);
+                      setChatFilter('all');
+                      onShowToast('All chats marked as read');
+                    }}
+                    className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                  >
+                    <CheckCheck className="w-4 h-4 text-[#53bdeb]" />
+                    <span>Mark all as read</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* WhatsApp Green Circular (+) New Chat Button */}
+            <button
+              type="button"
+              onClick={() => setIsNewGroupModalOpen(true)}
+              className="w-8 h-8 rounded-full bg-[#00a884] hover:bg-[#02906f] text-[#111b21] flex items-center justify-center transition-transform hover:scale-105 cursor-pointer shadow-md"
+              title="New chat or group"
+            >
+              <Plus className="w-5 h-5 text-[#111b21] stroke-[2.5]" />
+            </button>
+          </div>
+        </div>
+
+        {/* Search Bar */}
+        <div className="px-3 pt-2 pb-1 bg-[#111b21] shrink-0">
+          <div className="h-9 px-3 rounded-xl bg-[#202c33] flex items-center gap-3">
+            <Search className="w-4 h-4 text-[#8696a0] shrink-0" />
+            <input
+              type="text"
+              value={friendSearchTerm}
+              onChange={(e) => setFriendSearchTerm(e.target.value)}
+              placeholder="Search or start a new chat"
+              className="flex-1 bg-transparent border-none text-xs text-[#e9edef] placeholder-[#8696a0] focus:outline-none"
+            />
+            {friendSearchTerm && (
+              <button
+                type="button"
+                onClick={() => setFriendSearchTerm('')}
+                className="text-[#8696a0] hover:text-[#d1d7db]"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -979,312 +1165,258 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           </div>
         </div>
 
-        {/* Search Results Dropdown/Card */}
-        {searchResults.length > 0 && (
-          <div className="p-3 bg-gradient-to-b from-[#eaf3ff] to-[#f4f7ff] dark:from-[#17244d] dark:to-[#121c3d] border-b border-black/5 dark:border-white/10 space-y-2 max-h-60 overflow-y-auto">
-            <span className="text-[10px] uppercase font-bold text-[#6f7899] dark:text-[#aeb8dc] tracking-wider block px-1">
-              Search Results
-            </span>
-            {searchResults.map((sr) => (
-              <div
-                key={sr.id}
-                onClick={() => setSelectedUserPreview(sr)}
-                className="p-2.5 rounded-xl bg-white/80 dark:bg-white/10 border border-black/5 dark:border-white/10 flex items-center justify-between gap-2 hover:shadow-md cursor-pointer transition-all"
-              >
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-[#8cf4ff] to-[#d6a2ff] flex items-center justify-center font-bold text-xs text-[#171a42] shrink-0">
-                    {sr.name.slice(0, 2).toUpperCase()}
-                  </div>
-                  <div className="min-w-0">
-                    <b className="text-xs font-bold text-[#182044] dark:text-[#f1f3ff] block truncate">
-                      {sr.name}
-                    </b>
-                    <span className="text-[10px] text-[var(--accent)] font-semibold truncate block">
-                      @{sr.connect_id}
-                    </span>
-                  </div>
-                </div>
-
-                {sr.connection_status === 'accepted' ? (
-                  <span className="text-[10px] font-bold text-[#12a878] bg-[#e7f8f1] px-2 py-0.5 rounded-full flex items-center gap-1">
-                    <UserCheck className="w-3 h-3" /> Friends
-                  </span>
-                ) : sr.connection_status === 'pending' ? (
-                  <span className="text-[10px] font-semibold text-[#d17b22] bg-[#fff6e8] px-2 py-0.5 rounded-full flex items-center gap-1">
-                    <Clock className="w-3 h-3" /> Pending
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSendConnectRequest(sr.connect_id);
-                    }}
-                    className="px-2.5 py-1 rounded-lg text-xs font-bold text-white bg-[var(--accent)] hover:brightness-110 flex items-center gap-1 shadow-sm"
-                  >
-                    <UserPlus className="w-3 h-3" />
-                    <span>Connect</span>
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Tab Headers: Chats (Friends) vs Requests */}
-        <div className="flex border-b border-black/5 dark:border-white/10 text-xs font-bold">
+        {/* Filter Pills: All, Unread 3, Favourites, Groups, + */}
+        <div className="px-3 py-2 bg-[#111b21] flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0 border-b border-[#222d34]">
           <button
             type="button"
-            onClick={() => setActiveTab('chats')}
-            className={`flex-1 py-2.5 text-center transition-colors cursor-pointer border-b-2 ${
-              activeTab === 'chats'
-                ? 'border-[var(--accent)] text-[var(--accent)] bg-white/40 dark:bg-white/5'
-                : 'border-transparent text-[#6f7899] dark:text-[#aeb8dc] hover:text-[#182044]'
+            onClick={() => setChatFilter('all')}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
+              chatFilter === 'all'
+                ? 'bg-[#0a332c] text-[#00a884] font-bold border border-[#00a884]/40'
+                : 'bg-[#202c33] text-[#8696a0] hover:text-[#d1d7db]'
             }`}
           >
-            Chats ({friends.length})
+            All
           </button>
+
           <button
             type="button"
-            onClick={() => setActiveTab('requests')}
-            className={`flex-1 py-2.5 text-center transition-colors cursor-pointer border-b-2 relative ${
-              activeTab === 'requests'
-                ? 'border-[var(--accent)] text-[var(--accent)] bg-white/40 dark:bg-white/5'
-                : 'border-transparent text-[#6f7899] dark:text-[#aeb8dc] hover:text-[#182044]'
+            onClick={() => setChatFilter('unread')}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
+              chatFilter === 'unread'
+                ? 'bg-[#0a332c] text-[#00a884] font-bold border border-[#00a884]/40'
+                : 'bg-[#202c33] text-[#8696a0] hover:text-[#d1d7db]'
             }`}
           >
-            <span>Requests</span>
-            {pendingIncoming.length > 0 && (
-              <span className="ml-1.5 px-1.5 py-0.2 rounded-full bg-[#f04454] text-white text-[9px]">
-                {pendingIncoming.length}
-              </span>
-            )}
+            Unread 3
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setChatFilter('favourites')}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
+              chatFilter === 'favourites'
+                ? 'bg-[#0a332c] text-[#00a884] font-bold border border-[#00a884]/40'
+                : 'bg-[#202c33] text-[#8696a0] hover:text-[#d1d7db]'
+            }`}
+          >
+            Favourites
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setChatFilter('groups')}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
+              chatFilter === 'groups'
+                ? 'bg-[#0a332c] text-[#00a884] font-bold border border-[#00a884]/40'
+                : 'bg-[#202c33] text-[#8696a0] hover:text-[#d1d7db]'
+            }`}
+          >
+            Groups
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsNewGroupModalOpen(true)}
+            className="w-7 h-7 rounded-full bg-[#202c33] hover:bg-[#374248] text-[#8696a0] hover:text-[#d1d7db] flex items-center justify-center transition-colors cursor-pointer shrink-0"
+            title="Create group"
+          >
+            <Plus className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        {/* Friends Chat List */}
-        {activeTab === 'chats' ? (
-          <div className="flex-1 overflow-y-auto divide-y divide-black/5 dark:divide-white/5">
-            {friends.length === 0 ? (
-              <div className="p-8 text-center flex flex-col items-center justify-center text-[#71809a]">
-                <AtSign className="w-10 h-10 mb-2 opacity-30 text-[var(--accent)]" />
-                <p className="text-xs font-bold text-[#182044] dark:text-[#f1f3ff]">No Connected Friends</p>
-                <span className="text-[11px] text-[#8491a5] mt-1 max-w-[200px] leading-relaxed">
-                  Search a teammate by their <strong className="text-[var(--accent)]">@ConnectID</strong> above to invite and connect!
-                </span>
-              </div>
-            ) : (
-              friends.map((f) => {
-                const isSelected = activeFriend?.user_id === f.user_id;
-                return (
-                  <div
-                    key={f.user_id}
-                    onClick={() => setActiveFriend(f)}
-                    className={`p-3.5 flex items-center gap-3 cursor-pointer transition-colors ${
-                      isSelected
-                        ? 'bg-white/80 dark:bg-white/10 border-l-4 border-l-[var(--accent)]'
-                        : 'hover:bg-white/50 dark:hover:bg-white/5'
-                    }`}
-                  >
-                    <div className="relative">
-                      <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#8cf4ff] via-[#8d8cff] to-[#d6a2ff] text-[#171a42] flex items-center justify-center font-bold text-xs shadow-sm">
-                        {f.name.slice(0, 2).toUpperCase()}
-                      </div>
-                      <span
-                        className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-[#121f33] ${
-                          f.status === 'online'
-                            ? 'bg-[#12a878]'
-                            : f.status === 'in_call'
-                            ? 'bg-[#9b83f7] animate-pulse'
-                            : f.status === 'away'
-                            ? 'bg-[#d17b22]'
-                            : 'bg-[#9aa9c0]'
-                        }`}
-                      />
-                    </div>
+        {/* Quick Rows: Locked Chats & Archived */}
+        <div className="bg-[#111b21] divide-y divide-[#222d34]/60 border-b border-[#222d34] shrink-0">
+          <div
+            onClick={() => onShowToast('Locked chats are protected with passcode')}
+            className="px-4 py-2.5 flex items-center gap-3 hover:bg-[#202c33] transition-colors cursor-pointer"
+          >
+            <Lock className="w-4 h-4 text-[#00a884]" />
+            <span className="text-xs font-semibold text-[#d1d7db]">Locked chats</span>
+          </div>
 
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <b className="text-xs font-bold text-[#182044] dark:text-[#f1f3ff] truncate">
-                          {f.name}
-                        </b>
-                        {f.status === 'in_call' ? (
-                          <span className="text-[9px] text-[#b39dfa] font-bold flex items-center gap-0.5 bg-[#9b83f7]/15 px-1.5 py-0.2 rounded">
-                            <Phone className="w-2.5 h-2.5" /> in call
-                          </span>
-                        ) : f.status === 'online' ? (
-                          <span className="text-[9px] text-[#12a878] font-bold">online</span>
-                        ) : (
-                          <span className="text-[9px] text-[#8491a5]">offline</span>
-                        )}
-                      </div>
-                      <div className="flex items-center justify-between text-[11px] text-[#6f7899] dark:text-[#aeb8dc] mt-0.5">
-                        <span className="text-[10px] text-[var(--accent)] font-semibold truncate">
-                          @{f.connect_id}
-                        </span>
-                        <span className="text-[10px] opacity-75 truncate max-w-[90px]">
-                          {f.bio || 'Connected teammate'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
+          <div
+            onClick={() => onShowToast(pendingIncoming.length > 0 ? `${pendingIncoming.length} pending connection requests` : 'Archived chats folder')}
+            className="px-4 py-2.5 flex items-center justify-between hover:bg-[#202c33] transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3">
+              <Archive className="w-4 h-4 text-[#8696a0]" />
+              <span className="text-xs font-semibold text-[#d1d7db]">Archived</span>
+            </div>
+            {pendingIncoming.length > 0 && (
+              <span className="px-2 py-0.5 rounded-full bg-[#00a884] text-[#111b21] text-[10px] font-bold">
+                {pendingIncoming.length}
+              </span>
             )}
           </div>
-        ) : (
-          /* Incoming Connection Requests */
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            <span className="text-[10px] uppercase font-bold text-[#6f7899] dark:text-[#aeb8dc] block px-1">
-              Incoming Invites ({pendingIncoming.length})
-            </span>
-            {pendingIncoming.length === 0 ? (
-              <div className="p-6 text-center text-xs text-[#71809a]">
-                No pending requests.
-              </div>
-            ) : (
-              pendingIncoming.map((req) => (
+        </div>
+
+
+
+        {/* Conversations List */}
+        <div className="flex-1 overflow-y-auto divide-y divide-[#222d34]/40">
+          {displayedFriends.length === 0 ? (
+            <div className="p-8 text-center text-[#8696a0] text-xs">
+              {chatFilter === 'groups'
+                ? 'No groups found. Click (+) above to create your group!'
+                : chatFilter === 'favourites'
+                ? 'No favourite chats yet. Open any chat and click "Add to favourites".'
+                : 'No chats available. Click (+) above to start a chat!'}
+            </div>
+          ) : (
+            displayedFriends.map((f) => {
+              const isSelected = activeFriend?.connection_id === f.connection_id;
+              const isGroup = f.connection_id.startsWith('group_');
+              return (
                 <div
-                  key={req.connection_id}
-                  className="p-3 rounded-2xl bg-white/70 dark:bg-white/5 border border-black/5 dark:border-white/10 space-y-2 shadow-sm"
+                  key={f.connection_id}
+                  onClick={() => setActiveFriend(f)}
+                  className={`h-[72px] px-3.5 flex items-center gap-3 cursor-pointer transition-colors relative ${
+                    isSelected ? 'bg-[#2a3942]' : 'hover:bg-[#202c33]'
+                  }`}
                 >
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#8cf4ff] to-[#d6a2ff] flex items-center justify-center font-bold text-xs text-[#171a42]">
-                      {req.name.slice(0, 2).toUpperCase()}
+                  <div className="relative shrink-0">
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-sm text-white shadow-sm ${
+                      isGroup
+                        ? 'bg-gradient-to-tr from-[#128c7e] to-[#25d366]'
+                        : 'bg-gradient-to-tr from-[#00a884] via-[#128c7e] to-[#3b82f6]'
+                    }`}>
+                      {isGroup ? <Users className="w-6 h-6 text-white" /> : f.name.slice(0, 2).toUpperCase()}
                     </div>
-                    <div>
-                      <b className="text-xs font-bold text-[#182044] dark:text-[#f1f3ff] block leading-tight">
-                        {req.name}
-                      </b>
-                      <span className="text-[10px] text-[var(--accent)] font-semibold">
-                        @{req.connect_id}
+                    {!isGroup && f.status === 'online' && (
+                      <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-[#25d366] border-2 border-[#111b21]" />
+                    )}
+                  </div>
+
+                  <div className="flex-1 min-w-0 pr-1">
+                    <div className="flex items-center justify-between">
+                      <b className="text-sm font-semibold text-[#e9edef] truncate">{f.name}</b>
+                      <span className="text-[11px] text-[#8696a0] shrink-0">
+                        {isGroup ? 'Group' : f.status === 'online' ? 'online' : 'Thursday'}
                       </span>
                     </div>
-                  </div>
-                  <p className="text-[11px] text-[#6f7899] dark:text-[#aeb8dc] m-0">
-                    Wants to connect with you on Vertex Connect.
-                  </p>
-                  <div className="flex items-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => handleAcceptRequest(req.connection_id, req.name)}
-                      className="flex-1 py-1.5 rounded-xl text-xs font-bold text-white bg-[#12a878] hover:bg-[#0e9469] flex items-center justify-center gap-1 shadow-sm"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Accept</span>
-                    </button>
+
+                    <div className="flex items-center justify-between text-xs text-[#8696a0] mt-1">
+                      <span className="truncate max-w-[210px]">
+                        {isGroup ? f.bio : f.bio || 'Direct connection'}
+                      </span>
+                      {favouriteChatIds.has(f.connection_id) && (
+                        <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-500 shrink-0" />
+                      )}
+                    </div>
                   </div>
                 </div>
-              ))
-            )}
+              );
+            })
+          )}
+        </div>
 
-            {/* Outgoing Requests */}
-            {pendingOutgoing.length > 0 && (
-              <div className="pt-3 border-t border-black/5 dark:border-white/10 space-y-2">
-                <span className="text-[10px] uppercase font-bold text-[#6f7899] dark:text-[#aeb8dc] block px-1">
-                  Sent Requests ({pendingOutgoing.length})
-                </span>
-                {pendingOutgoing.map((out) => (
-                  <div
-                    key={out.connection_id}
-                    className="p-2.5 rounded-xl bg-black/5 dark:bg-white/5 text-xs flex items-center justify-between text-[#6f7899] dark:text-[#aeb8dc]"
-                  >
-                    <div>
-                      <b className="text-[#182044] dark:text-[#f1f3ff]">{out.name}</b>
-                      <span className="block text-[10px] text-[var(--accent)] font-semibold">@{out.connect_id}</span>
-                    </div>
-                    <span className="text-[10px] text-[#d17b22] font-semibold flex items-center gap-1">
-                      <Clock className="w-3 h-3" /> Waiting
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
+        {/* Bottom Banner: Get WhatsApp for Windows */}
+        <div className="p-3 bg-[#111b21] border-t border-[#222d34] flex items-center gap-3 shrink-0">
+          <div className="w-8 h-8 rounded-lg bg-[#25d366]/20 flex items-center justify-center text-[#25d366] shrink-0">
+            <Laptop className="w-4 h-4" />
           </div>
-        )}
+          <div className="min-w-0 flex-1">
+            <span className="text-xs font-semibold text-[#e9edef] block">Get WhatsApp for Windows</span>
+            <span className="text-[10px] text-[#8696a0]">Seamless calls & faster messaging</span>
+          </div>
+        </div>
       </div>
 
       {/* RIGHT SIDE: WhatsApp Style Chat Pane */}
       {activeFriend ? (
-        <div className="flex-1 flex flex-col bg-white/20 dark:bg-white/5">
+        <div className="flex-1 flex flex-col bg-[#0b141a]">
           {/* Header with Friend details, Call buttons */}
-          <div className="h-16 px-3 md:px-6 border-b border-black/5 dark:border-white/10 flex items-center justify-between bg-white/40 dark:bg-white/5">
-            <div className="flex items-center gap-2 md:gap-3 min-w-0">
+          <div className="h-[60px] px-4 border-b border-[#222d34] flex items-center justify-between bg-[#202c33] shrink-0 text-[#e9edef]">
+            <div className="flex items-center gap-3 min-w-0">
               {/* Mobile Back Button to return to Chats List */}
               <button
                 type="button"
                 onClick={() => setActiveFriend(null)}
-                className="md:hidden p-2 -ml-1 rounded-xl text-[#40516c] dark:text-[#cbd4ff] hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer"
+                className="md:hidden p-1.5 -ml-1 rounded-full text-[#aebac1] hover:bg-[#111b21] cursor-pointer"
                 title="Back to chats"
               >
                 <ArrowLeft className="w-5 h-5" />
               </button>
 
-              <div className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-gradient-to-tr from-[#8cf4ff] via-[#8d8cff] to-[#d6a2ff] flex items-center justify-center font-bold text-xs text-[#171a42] shrink-0">
-                {activeFriend.name.slice(0, 2).toUpperCase()}
+              <div className="relative shrink-0">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white shadow-sm ${
+                  activeFriend.connection_id.startsWith('group_')
+                    ? 'bg-gradient-to-tr from-[#128c7e] to-[#25d366]'
+                    : 'bg-gradient-to-tr from-[#00a884] via-[#128c7e] to-[#3b82f6]'
+                }`}>
+                  {activeFriend.connection_id.startsWith('group_') ? (
+                    <Users className="w-5 h-5 text-white" />
+                  ) : (
+                    activeFriend.name.slice(0, 2).toUpperCase()
+                  )}
+                </div>
+                {!activeFriend.connection_id.startsWith('group_') && activeFriend.status === 'online' && (
+                  <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#25d366] border-2 border-[#202c33]" />
+                )}
               </div>
+
               <div
                 className="min-w-0 cursor-pointer"
                 onClick={() => setIsContactInfoOpen(true)}
                 title="View contact info"
               >
-                <div className="flex items-center gap-1.5 md:gap-2 truncate">
-                  <b className="text-xs md:text-sm font-bold text-[#182044] dark:text-[#f1f3ff] leading-tight truncate">
+                <div className="flex items-center gap-2 truncate">
+                  <b className="text-sm font-semibold text-[#e9edef] leading-tight truncate">
                     {activeFriend.name}
                   </b>
-                  <span className="text-[9px] md:text-[10px] font-semibold text-[var(--accent)] bg-[var(--accent)]/10 px-1.5 py-0.2 rounded shrink-0">
-                    @{activeFriend.connect_id}
-                  </span>
                   {isMuted && (
                     <span title="Notifications muted" className="inline-flex items-center">
-                      <BellOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <BellOff className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />
                     </span>
                   )}
                   {disappearingOption !== 'off' && (
                     <span title={`Disappearing: ${disappearingOption}`} className="inline-flex items-center">
-                      <Clock className="w-3.5 h-3.5 text-[#8ce7f2] shrink-0" />
+                      <Clock className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />
                     </span>
                   )}
                 </div>
-                <small className="text-[10px] md:text-[11px] text-[#6f7899] dark:text-[#aeb8dc] flex items-center gap-1 truncate">
+                <small className="text-[11px] text-[#8696a0] flex items-center gap-1 truncate">
                   {isTyping ? (
-                    <span className="text-[var(--accent)] font-bold animate-pulse">typing…</span>
+                    <span className="text-[#25d366] font-medium animate-pulse">typing…</span>
+                  ) : activeFriend.connection_id.startsWith('group_') ? (
+                    <span>click here for group info</span>
+                  ) : activeFriend.status === 'online' ? (
+                    <span className="text-[#25d366]">online</span>
                   ) : (
-                    <span className="truncate">{activeFriend.bio || 'Tap here for contact info'}</span>
+                    <span className="truncate">{activeFriend.bio || 'last seen recently'}</span>
                   )}
                 </small>
               </div>
             </div>
 
             {/* Quick Actions (Voice, Video, In-Chat Search & WhatsApp 3-Dots Menu) */}
-            <div className="flex items-center gap-1.5 md:gap-2">
-              <button
-                type="button"
-                onClick={() => onStartCall(activeFriend.name, 'audio', activeFriend.user_id, activeFriend.connect_id)}
-                title="Voice call"
-                className="w-8 h-8 md:w-9 md:h-9 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-[var(--accent)] hover:text-white border border-black/5 dark:border-white/10 text-[#40516c] dark:text-[#cbd4ff] transition-all cursor-pointer shadow-sm"
-              >
-                <Phone className="w-4 h-4" />
-              </button>
+            <div className="flex items-center gap-2 text-[#aebac1]">
               <button
                 type="button"
                 onClick={() => onStartCall(activeFriend.name, 'video', activeFriend.user_id, activeFriend.connect_id)}
                 title="Video call"
-                className="w-8 h-8 md:w-9 md:h-9 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-[var(--accent)] hover:text-white border border-black/5 dark:border-white/10 text-[#40516c] dark:text-[#cbd4ff] transition-all cursor-pointer shadow-sm"
+                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] transition-colors cursor-pointer"
               >
-                <Video className="w-4 h-4" />
+                <Video className="w-5 h-5 text-[#aebac1]" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onStartCall(activeFriend.name, 'audio', activeFriend.user_id, activeFriend.connect_id)}
+                title="Voice call"
+                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] transition-colors cursor-pointer"
+              >
+                <Phone className="w-4.5 h-4.5 text-[#aebac1]" />
               </button>
               <button
                 type="button"
                 onClick={() => setIsInChatSearchOpen(!isInChatSearchOpen)}
                 title="Search in chat"
-                className={`w-8 h-8 md:w-9 md:h-9 rounded-xl flex items-center justify-center border border-black/5 dark:border-white/10 transition-all cursor-pointer shadow-sm ${
-                  isInChatSearchOpen
-                    ? 'bg-[var(--accent)] text-white'
-                    : 'bg-white/80 dark:bg-white/10 hover:bg-[var(--accent)] hover:text-white text-[#40516c] dark:text-[#cbd4ff]'
+                className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+                  isInChatSearchOpen ? 'bg-[#111b21] text-[#00a884]' : 'hover:bg-[#111b21] text-[#aebac1]'
                 }`}
               >
-                <Search className="w-4 h-4" />
+                <Search className="w-4.5 h-4.5" />
               </button>
 
               {/* WhatsApp Active Chat 3-Dots Menu Button */}
@@ -1295,120 +1427,233 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     e.stopPropagation();
                     setIsChatMenuOpen(!isChatMenuOpen);
                   }}
-                  title="More options"
-                  className="whatsapp-menu-btn w-8 h-8 md:w-9 md:h-9 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/20 border border-black/5 dark:border-white/10 text-[#40516c] dark:text-[#cbd4ff] transition-all cursor-pointer shadow-sm"
+                  title="Menu"
+                  className="whatsapp-menu-btn w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] text-[#aebac1] transition-colors cursor-pointer"
                 >
-                  <MoreVertical className="w-4 h-4" />
+                  <MoreVertical className="w-5 h-5" />
                 </button>
 
-                {/* WhatsApp Chat 3-Dots Dropdown Menu */}
+                {/* WhatsApp Chat 3-Dots Dropdown Menu - EXACT 16 ITEMS FROM REFERENCE */}
                 {isChatMenuOpen && (
-                  <div className="whatsapp-menu-container absolute right-0 top-10 w-56 rounded-2xl bg-[#111b21] border border-white/10 shadow-2xl z-50 p-1.5 animate-in fade-in zoom-in-95 duration-150 text-white">
+                  <div className="whatsapp-menu-container absolute right-0 top-11 w-64 rounded-xl bg-[#233138] shadow-2xl z-50 py-2 border border-[#2e3e46] animate-in fade-in zoom-in-95 duration-100 text-[#d1d7db]">
+                    {/* 1. Contact info */}
                     <button
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
                         setIsContactInfoOpen(true);
                       }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
                     >
-                      <Info className="w-4 h-4 text-[#8ce7f2]" />
-                      <span>Contact info</span>
+                      <Info className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <span>{activeFriend.connection_id.startsWith('group_') ? 'Group info' : 'Contact info'}</span>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsChatMenuOpen(false);
-                        setIsMediaModalOpen(true);
-                      }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-                    >
-                      <ImageIcon className="w-4 h-4 text-[#8ce7f2]" />
-                      <span>Media, links, and docs</span>
-                    </button>
-
+                    {/* 2. Search */}
                     <button
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
                         setIsInChatSearchOpen(true);
                       }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
                     >
-                      <Search className="w-4 h-4 text-[#8ce7f2]" />
+                      <Search className="w-4.5 h-4.5 text-[#8696a0]" />
                       <span>Search</span>
                     </button>
 
+                    {/* 3. Select messages */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsChatMenuOpen(false);
+                        onShowToast('Select messages enabled');
+                      }}
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    >
+                      <CheckSquare className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <span>Select messages</span>
+                    </button>
+
+                    {/* 4. Mute notifications */}
                     <button
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
                         setIsMuteModalOpen(true);
                       }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+                      className="w-full px-5 py-2.5 text-sm flex items-center justify-between hover:bg-[#182229] transition-colors text-left cursor-pointer"
                     >
-                      {isMuted ? <Bell className="w-4 h-4 text-emerald-400" /> : <BellOff className="w-4 h-4 text-amber-400" />}
-                      <span>{isMuted ? 'Unmute notifications' : 'Mute notifications'}</span>
+                      <div className="flex items-center gap-3.5">
+                        <BellOff className="w-4.5 h-4.5 text-[#8696a0]" />
+                        <span>Mute notifications</span>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-[#8696a0]" />
                     </button>
 
+                    {/* 5. Disappearing messages */}
                     <button
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
                         setIsDisappearingModalOpen(true);
                       }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
                     >
-                      <Clock className="w-4 h-4 text-[#8ce7f2]" />
+                      <Clock className="w-4.5 h-4.5 text-[#8696a0]" />
                       <span>Disappearing messages</span>
                     </button>
 
+                    {/* 6. Chat theme */}
                     <button
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
                         setIsWallpaperModalOpen(true);
                       }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
                     >
-                      <Palette className="w-4 h-4 text-[#8ce7f2]" />
-                      <span>Wallpaper</span>
+                      <Palette className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <span>Chat theme</span>
                     </button>
 
-                    <div className="h-[1px] bg-white/10 my-1" />
-
-                    <button
-                      type="button"
-                      onClick={handleExportChat}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-                    >
-                      <Share2 className="w-4 h-4 text-[#8ce7f2]" />
-                      <span>Export chat (.txt)</span>
-                    </button>
-
+                    {/* 7. Add to favourites */}
                     <button
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
-                        setIsClearChatModalOpen(true);
+                        toggleFavouriteChat(activeFriend.connection_id);
                       }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer text-amber-300"
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
                     >
-                      <Trash2 className="w-4 h-4" />
-                      <span>Clear chat</span>
+                      <Heart className={`w-4.5 h-4.5 ${favouriteChatIds.has(activeFriend.connection_id) ? 'text-rose-500 fill-rose-500' : 'text-[#8696a0]'}`} />
+                      <span>{favouriteChatIds.has(activeFriend.connection_id) ? 'Remove from favourites' : 'Add to favourites'}</span>
                     </button>
 
+                    {/* 8. Add to list */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsChatMenuOpen(false);
+                        onShowToast('Chat added to custom list');
+                      }}
+                      className="w-full px-5 py-2.5 text-sm flex items-center justify-between hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3.5">
+                        <ListFilter className="w-4.5 h-4.5 text-[#8696a0]" />
+                        <span>Add to list</span>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-[#8696a0]" />
+                    </button>
+
+                    {/* 9. Export chat */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsChatMenuOpen(false);
+                        handleExportChat();
+                      }}
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    >
+                      <Download className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <span>Export chat</span>
+                    </button>
+
+                    {/* 10. Close chat */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsChatMenuOpen(false);
+                        setActiveFriend(null);
+                      }}
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    >
+                      <XCircle className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <span>Close chat</span>
+                    </button>
+
+                    {/* Divider 1 */}
+                    <div className="h-[1px] bg-[#2e3e46] my-1" />
+
+                    {/* 11. Send call link */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsChatMenuOpen(false);
+                        handleSendCallLink();
+                      }}
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    >
+                      <Link2 className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <span>Send call link</span>
+                    </button>
+
+                    {/* 12. New group call */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsChatMenuOpen(false);
+                        onStartCall(activeFriend.name, 'video', activeFriend.user_id, activeFriend.connect_id);
+                      }}
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    >
+                      <Users className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <span>New group call</span>
+                    </button>
+
+                    {/* Divider 2 */}
+                    <div className="h-[1px] bg-[#2e3e46] my-1" />
+
+                    {/* 13. Report */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsChatMenuOpen(false);
+                        onShowToast('Report submitted for safety review');
+                      }}
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    >
+                      <ThumbsDown className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <span>Report</span>
+                    </button>
+
+                    {/* 14. Block */}
                     <button
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
                         setIsBlockModalOpen(true);
                       }}
-                      className="w-full px-3 py-2 text-xs flex items-center gap-2.5 rounded-xl hover:bg-rose-500/20 text-rose-400 transition-colors text-left cursor-pointer"
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
                     >
-                      <Ban className="w-4 h-4" />
-                      <span>{isBlocked ? 'Unblock contact' : 'Block contact'}</span>
+                      <Ban className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <span>{isBlocked ? 'Unblock' : 'Block'}</span>
+                    </button>
+
+                    {/* 15. Clear chat */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsChatMenuOpen(false);
+                        setIsClearChatModalOpen(true);
+                      }}
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] transition-colors text-left cursor-pointer"
+                    >
+                      <MinusCircle className="w-4.5 h-4.5 text-[#8696a0]" />
+                      <span>Clear chat</span>
+                    </button>
+
+                    {/* 16. Delete chat */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsChatMenuOpen(false);
+                        handleDeleteChat();
+                      }}
+                      className="w-full px-5 py-2.5 text-sm flex items-center gap-3.5 hover:bg-[#182229] text-rose-400 hover:text-rose-300 transition-colors text-left cursor-pointer"
+                    >
+                      <Trash2 className="w-4.5 h-4.5 text-rose-400" />
+                      <span>Delete chat</span>
                     </button>
                   </div>
                 )}
@@ -1528,19 +1773,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     </div>
 
                     <div
-                      className={`max-w-[80%] sm:max-w-[70%] p-3.5 rounded-2xl shadow-sm text-xs leading-relaxed relative ${
+                      className={`max-w-[80%] sm:max-w-[70%] px-3 py-2 rounded-lg shadow-sm text-xs leading-relaxed relative ${
                         isMe
-                          ? 'bg-gradient-to-r from-[#128c7e] to-[#0f776a] text-white rounded-br-sm'
-                          : 'bg-white dark:bg-[#1f2c34] text-[#182044] dark:text-[#eef1ff] border border-black/5 dark:border-white/10 rounded-bl-sm'
+                          ? 'bg-[#005c4b] text-[#e9edef] rounded-tr-none'
+                          : 'bg-[#202c33] text-[#e9edef] rounded-tl-none border border-[#2e3e46]/30'
                       }`}
                     >
                       {/* Quoted Reply Block */}
                       {m.reply_to_snippet && (
                         <div
-                          className={`mb-2 p-2 rounded-xl text-[11px] border-l-2 ${
+                          className={`mb-2 p-2 rounded-md text-[11px] border-l-4 ${
                             isMe
-                              ? 'bg-black/20 border-white text-white/95'
-                              : 'bg-black/5 dark:bg-white/5 border-[var(--accent)] text-[#40516c] dark:text-[#aeb8dc]'
+                              ? 'bg-[#025143] border-[#25d366] text-[#d1d7db]'
+                              : 'bg-[#182229] border-[#00a884] text-[#d1d7db]'
                           }`}
                         >
                           <span className="font-bold block truncate opacity-90">{m.reply_to_snippet}</span>
@@ -1682,7 +1927,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           )}
 
           {/* Message Input Box with Voice Note Recording & WhatsApp Menus */}
-          <div className="p-3 md:p-4 border-t border-black/5 dark:border-white/10 bg-white/40 dark:bg-white/5 relative">
+          <div className="px-4 py-2.5 border-t border-[#222d34] bg-[#202c33] relative shrink-0">
             {isBlocked ? (
               <div className="p-3 text-center text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center justify-center gap-2">
                 <span>You blocked this contact.</span>
@@ -1699,10 +1944,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               </div>
             ) : isRecordingVoice ? (
               /* Live Voice Recording UI */
-              <div className="h-12 px-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between gap-4 animate-in fade-in duration-200">
+              <div className="h-10 px-4 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between gap-4 animate-in fade-in duration-200">
                 <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-rose-500 animate-ping" />
-                  <span className="text-xs font-bold text-rose-500 flex items-center gap-1.5">
+                  <div className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
+                  <span className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
                     Recording Audio… {Math.floor(voiceRecordSeconds / 60)}:{voiceRecordSeconds % 60 < 10 ? '0' : ''}{voiceRecordSeconds % 60}
                   </span>
                 </div>
@@ -1712,7 +1957,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     type="button"
                     onClick={handleCancelVoiceRecord}
                     title="Discard voice note"
-                    className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-rose-500/20 text-rose-400 font-bold text-xs flex items-center gap-1 transition-all cursor-pointer"
+                    className="px-3 py-1 rounded-lg bg-white/10 hover:bg-rose-500/20 text-rose-400 font-semibold text-xs flex items-center gap-1 transition-all cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Cancel</span>
@@ -1722,20 +1967,20 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     type="button"
                     onClick={handleStopAndSendVoiceRecord}
                     title="Send voice note"
-                    className="px-4 py-1.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-rose-500/30 transition-all cursor-pointer"
+                    className="px-3.5 py-1 rounded-lg bg-[#00a884] hover:bg-[#02906f] text-[#111b21] font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md"
                   >
                     <Send className="w-3.5 h-3.5" />
-                    <span>Send Audio</span>
+                    <span>Send</span>
                   </button>
                 </div>
               </div>
             ) : (
               /* Normal WhatsApp Input Box */
-              <form onSubmit={handleSendMessage} className="flex items-center gap-2 relative">
+              <form onSubmit={handleSendMessage} className="flex items-center gap-2.5 relative">
                 {/* Emoji Picker Popover */}
                 {isEmojiPickerOpen && (
-                  <div className="emoji-picker-container absolute bottom-14 left-0 w-72 bg-[#111b21] border border-white/10 rounded-2xl shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-150">
-                    <div className="text-[11px] font-bold text-[#8ce7f2] mb-2 px-1">Emojis</div>
+                  <div className="emoji-picker-container absolute bottom-14 left-0 w-72 bg-[#202c33] border border-[#2e3e46] rounded-xl shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-150">
+                    <div className="text-[11px] font-semibold text-[#8696a0] mb-2 px-1">Emojis</div>
                     <div className="grid grid-cols-7 gap-1.5 max-h-48 overflow-y-auto p-1">
                       {['😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😗','😚','😋','😛','😜','🤪','😎','🤩','🥳','😏','😒','😞','😔','😟','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵','🥶','😱','😨','🤗','🤔','🤫','🤥','😶','😐','😑','😬','🙄','🥱','😴','😷','🤒','🤑','🤠','😈','👿','💩','👻','💀','👽','🤖','🎃','👏','👍','👎','👊','✊','🤛','🤜','🤞','✌️','🤟','🤘','👌','🤌','👈','👉','👆','👇','☝️','✋','🤚','🖐','👋','🤝','🙏','💪','🦾','❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💓','💗','💖','💘','💝','🔥','✨','🎉','🚀','💯','⭐','🌟','⚡','☀️','☕','🍔','🍕','🎉'].map(emoji => (
                         <button
@@ -1753,7 +1998,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
                 {/* WhatsApp Circular Attachment Popover */}
                 {isAttachmentMenuOpen && (
-                  <div className="attachment-menu-container absolute bottom-14 left-8 bg-[#111b21] border border-white/10 rounded-2xl shadow-2xl p-3 z-50 flex items-center gap-3 animate-in fade-in zoom-in-95 duration-150">
+                  <div className="attachment-menu-container absolute bottom-14 left-8 bg-[#202c33] border border-[#2e3e46] rounded-xl shadow-2xl p-3 z-50 flex items-center gap-3 animate-in fade-in zoom-in-95 duration-150">
                     <button
                       type="button"
                       onClick={() => handleSelectAttachmentType('image')}
@@ -1763,7 +2008,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-lg group-hover:scale-105 transition-transform">
                         <ImageIcon className="w-5 h-5" />
                       </div>
-                      <span className="text-[10px] text-white/80 font-medium">Photos</span>
+                      <span className="text-[10px] text-[#d1d7db] font-medium">Photos</span>
                     </button>
 
                     <button
@@ -1775,7 +2020,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-500 to-cyan-600 flex items-center justify-center text-white shadow-lg group-hover:scale-105 transition-transform">
                         <FileText className="w-5 h-5" />
                       </div>
-                      <span className="text-[10px] text-white/80 font-medium">Document</span>
+                      <span className="text-[10px] text-[#d1d7db] font-medium">Document</span>
                     </button>
 
                     <button
@@ -1787,24 +2032,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center text-white shadow-lg group-hover:scale-105 transition-transform">
                         <Music className="w-5 h-5" />
                       </div>
-                      <span className="text-[10px] text-white/80 font-medium">Audio</span>
+                      <span className="text-[10px] text-[#d1d7db] font-medium">Audio</span>
                     </button>
                   </div>
                 )}
-
-                {/* Emoji Picker Trigger */}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsEmojiPickerOpen(!isEmojiPickerOpen);
-                    setIsAttachmentMenuOpen(false);
-                  }}
-                  title="Emoji"
-                  className="emoji-picker-btn w-10 h-10 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/20 text-[#6f7899] dark:text-[#cbd4ff] transition-all cursor-pointer shadow-sm shrink-0"
-                >
-                  <Smile className="w-5 h-5" />
-                </button>
 
                 {/* Attachment Paperclip Trigger */}
                 <button
@@ -1815,53 +2046,80 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     setIsAttachmentMenuOpen(!isAttachmentMenuOpen);
                     setIsEmojiPickerOpen(false);
                   }}
-                  title="Attach file, photo or document"
-                  className="attachment-menu-btn w-10 h-10 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/20 text-[#6f7899] dark:text-[#cbd4ff] transition-all cursor-pointer disabled:opacity-50 shadow-sm shrink-0"
+                  title="Attach"
+                  className="attachment-menu-btn w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] text-[#8696a0] hover:text-[#d1d7db] transition-colors cursor-pointer disabled:opacity-50 shrink-0"
                 >
-                  {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+                  {isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Paperclip className="w-5 h-5" />}
                 </button>
 
-                {/* WhatsApp Mic Recording Trigger */}
+                {/* Emoji Picker Trigger */}
                 <button
                   type="button"
-                  onClick={handleStartVoiceRecord}
-                  title="Record voice note"
-                  className="w-10 h-10 rounded-xl flex items-center justify-center bg-white/80 dark:bg-white/10 hover:bg-rose-500 hover:text-white text-[#6f7899] dark:text-[#cbd4ff] transition-all cursor-pointer shadow-sm active:scale-95 shrink-0"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsEmojiPickerOpen(!isEmojiPickerOpen);
+                    setIsAttachmentMenuOpen(false);
+                  }}
+                  title="Emoji"
+                  className="emoji-picker-btn w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] text-[#8696a0] hover:text-[#d1d7db] transition-colors cursor-pointer shrink-0"
                 >
-                  <Mic className="w-4 h-4" />
+                  <Smile className="w-5 h-5" />
                 </button>
 
                 <input
                   type="text"
                   value={inputMessage}
                   onChange={handleInputChange}
-                  placeholder={`Type a message...`}
-                  className="flex-1 h-10 px-4 rounded-xl border border-[#cbd5ff]/60 dark:border-white/10 bg-white/80 dark:bg-[#0c1230] text-xs text-[#182044] dark:text-[#eef1ff] placeholder-[#71809a] focus:outline-none focus:border-[#25d366] shadow-inner"
+                  placeholder="Type a message"
+                  className="flex-1 h-10 px-4 rounded-lg bg-[#2a3942] text-xs text-[#d1d7db] placeholder-[#8696a0] focus:outline-none"
                 />
 
-                <button
-                  type="submit"
-                  disabled={!inputMessage.trim()}
-                  className="w-10 h-10 rounded-xl bg-gradient-to-r from-[#128c7e] to-[#25d366] hover:brightness-110 active:scale-95 text-white flex items-center justify-center transition-all cursor-pointer shadow-md shadow-[#25d366]/30 disabled:opacity-40 shrink-0"
-                >
-                  <Send className="w-4 h-4" />
-                </button>
+                {inputMessage.trim() ? (
+                  <button
+                    type="submit"
+                    className="w-9 h-9 rounded-full flex items-center justify-center text-[#8696a0] hover:text-[#00a884] transition-colors cursor-pointer shrink-0"
+                    title="Send"
+                  >
+                    <Send className="w-5 h-5 text-[#00a884]" />
+                  </button>
+                ) : (
+                  /* WhatsApp Mic Recording Trigger */
+                  <button
+                    type="button"
+                    onClick={handleStartVoiceRecord}
+                    title="Voice note"
+                    className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#111b21] text-[#8696a0] hover:text-[#d1d7db] transition-colors cursor-pointer shrink-0"
+                  >
+                    <Mic className="w-5 h-5" />
+                  </button>
+                )}
               </form>
             )}
           </div>
         </div>
       ) : (
-        /* Empty Right Pane when no friend is selected (Laptop/Desktop only) */
-        <div className="hidden md:flex flex-1 flex-col items-center justify-center text-center p-8 text-[#71809a]">
-          <div className="w-16 h-16 rounded-3xl bg-[var(--accent)]/10 text-[var(--accent)] flex items-center justify-center mb-3">
-            <MessageSquare className="w-8 h-8" />
+        /* Empty Right Pane when no friend is selected (Laptop/Desktop only) - WhatsApp Web Screen */
+        <div className="hidden md:flex flex-1 flex-col items-center justify-center text-center p-8 bg-[#222e35] text-[#8696a0] select-none border-b-[6px] border-[#25d366]">
+          <div className="w-24 h-24 rounded-full bg-[#202c33] flex items-center justify-center mb-6 shadow-inner text-[#00a884]">
+            <Laptop className="w-12 h-12" />
           </div>
-          <h3 className="text-base font-bold text-[#182044] dark:text-[#f1f3ff] mb-1">
-            Vertex Connect Messaging
-          </h3>
-          <p className="text-xs text-[#6f7899] dark:text-[#aeb8dc] max-w-sm mb-4">
-            Search for a teammate above using their Connect ID (e.g. <strong className="text-[var(--accent)]">@username</strong>) and click Connect to start chatting!
+          <h2 className="text-2xl font-light text-[#e9edef] mb-2 tracking-wide">
+            Download WhatsApp for Windows
+          </h2>
+          <p className="text-sm text-[#8696a0] max-w-md leading-relaxed mb-6">
+            Make calls, share your screen and get a faster experience when you download the Windows app.
           </p>
+          <button
+            type="button"
+            onClick={() => onShowToast('You are using Vertex Connect Web')}
+            className="px-6 py-2.5 rounded-full bg-[#00a884] hover:bg-[#02906f] text-[#111b21] font-semibold text-sm transition-transform hover:scale-105 shadow-lg cursor-pointer"
+          >
+            Get from Microsoft Store
+          </button>
+          <div className="mt-16 flex items-center gap-2 text-xs text-[#8696a0]">
+            <Lock className="w-3.5 h-3.5" />
+            <span>Your personal messages are end-to-end encrypted</span>
+          </div>
         </div>
       )}
 

@@ -365,8 +365,8 @@ const MainLayout: React.FC = () => {
   }
 
   return (
-    <div className="flex min-h-screen text-[var(--ink)]">
-      {/* Sidebar */}
+    <div className="flex h-screen overflow-hidden text-[var(--ink)] bg-[#0c1317]">
+      {/* Sidebar - WhatsApp Web Style Slim Dock */}
       <Sidebar
         currentPage={currentPage}
         onPageChange={(p) => {
@@ -376,14 +376,16 @@ const MainLayout: React.FC = () => {
       />
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 pb-16 md:pb-0">
-        <Topbar
-          searchQuery={searchQuery}
-          onSearchChange={(q) => setSearchQuery(q)}
-          onShowNotificationToast={showToast}
-        />
+      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden pb-14 md:pb-0">
+        {currentPage !== 'messages' && (
+          <Topbar
+            searchQuery={searchQuery}
+            onSearchChange={(q) => setSearchQuery(q)}
+            onShowNotificationToast={showToast}
+          />
+        )}
 
-        <main className="flex-1 p-2 sm:p-5 md:p-8 max-w-[1600px] w-full mx-auto">
+        <main className={`flex-1 w-full h-full overflow-hidden ${currentPage === 'messages' ? 'p-0' : 'p-2 sm:p-5 md:p-8 max-w-[1600px] mx-auto overflow-y-auto'}`}>
           {currentPage === 'messages' && (
             <MessagesPage
               onStartCall={(name, callType, targetUserId, targetConnectId) =>
