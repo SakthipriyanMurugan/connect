@@ -56,6 +56,7 @@ import {
 } from 'lucide-react';
 import type { ChatMessage, ConnectionUser, SearchUserResult } from '../../types';
 import { VoiceNotePlayer, sanitizeMediaUrl } from '../chat/VoiceNotePlayer';
+import { SidebarChatsSkeleton, ChatHeaderSkeleton, ChatMessagesSkeleton, FullChatPaneSkeleton } from '../chat/ChatSkeletons';
 import { API_BASE_URL, WS_BASE_URL } from '../../config/api';
 
 const getDisplayName = (name?: string, connectId?: string) => {
@@ -91,15 +92,73 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const [isSearching, setIsSearching] = useState(false);
   const [selectedUserPreview, setSelectedUserPreview] = useState<SearchUserResult | null>(null);
 
-  // Friends & Connections
-  const [friends, setFriends] = useState<ConnectionUser[]>([]);
-  const [pendingIncoming, setPendingIncoming] = useState<ConnectionUser[]>([]);
+  // Friends & Connections (with instant cache hydration)
+  const [friends, setFriends] = useState<ConnectionUser[]>(() => {
+    try {
+      const savedUserStr = localStorage.getItem('vertexUser');
+      const uid = savedUserStr ? JSON.parse(savedUserStr)?.id : '';
+      if (uid) {
+        const cached = localStorage.getItem(`vertex_cached_friends_${uid}`);
+        if (cached) return JSON.parse(cached);
+      }
+    } catch {}
+    return [];
+  });
+  const [pendingIncoming, setPendingIncoming] = useState<ConnectionUser[]>(() => {
+    try {
+      const savedUserStr = localStorage.getItem('vertexUser');
+      const uid = savedUserStr ? JSON.parse(savedUserStr)?.id : '';
+      if (uid) {
+        const cached = localStorage.getItem(`vertex_cached_incoming_${uid}`);
+        if (cached) return JSON.parse(cached);
+      }
+    } catch {}
+    return [];
+  });
   const [pendingOutgoing, setPendingOutgoing] = useState<ConnectionUser[]>([]);
-  const [isLoadingConnections, setIsLoadingConnections] = useState(false);
+  const [isLoadingConnections, setIsLoadingConnections] = useState<boolean>(() => {
+    try {
+      const savedUserStr = localStorage.getItem('vertexUser');
+      const uid = savedUserStr ? JSON.parse(savedUserStr)?.id : '';
+      if (uid) {
+        const cached = localStorage.getItem(`vertex_cached_friends_${uid}`);
+        if (cached && JSON.parse(cached).length > 0) return false;
+      }
+    } catch {}
+    return true;
+  });
 
-  // Active Chat State
-  const [activeFriend, setActiveFriend] = useState<ConnectionUser | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Active Chat State (with instant cache hydration)
+  const [activeFriend, setActiveFriend] = useState<ConnectionUser | null>(() => {
+    try {
+      const savedUserStr = localStorage.getItem('vertexUser');
+      const uid = savedUserStr ? JSON.parse(savedUserStr)?.id : '';
+      if (uid) {
+        const cachedActive = localStorage.getItem(`vertex_active_friend_${uid}`);
+        if (cachedActive) return JSON.parse(cachedActive);
+        const cachedFriends = localStorage.getItem(`vertex_cached_friends_${uid}`);
+        if (cachedFriends) {
+          const list = JSON.parse(cachedFriends);
+          if (list && list.length > 0) return list[0];
+        }
+      }
+    } catch {}
+    return null;
+  });
+  const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(false);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const savedUserStr = localStorage.getItem('vertexUser');
+      const uid = savedUserStr ? JSON.parse(savedUserStr)?.id : '';
+      const cachedActive = uid ? localStorage.getItem(`vertex_active_friend_${uid}`) : null;
+      const convId = cachedActive ? JSON.parse(cachedActive)?.conversation_id : null;
+      if (convId) {
+        const cachedMsgs = localStorage.getItem(`vertex_cached_msgs_${convId}`);
+        if (cachedMsgs) return JSON.parse(cachedMsgs);
+      }
+    } catch {}
+    return [];
+  });
   const [inputMessage, setInputMessage] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
@@ -291,8 +350,33 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     setShowScrollBottomBtn(false);
     if (activeFriend) {
       hasRecentlyDeletedRef.current = false;
+      if (user?.id) {
+        try {
+          localStorage.setItem(`vertex_active_friend_${user.id}`, JSON.stringify(activeFriend));
+        } catch {}
+      }
+    } else if (user?.id) {
+      try {
+        localStorage.removeItem(`vertex_active_friend_${user.id}`);
+      } catch {}
     }
-  }, [activeFriend]);
+  }, [activeFriend, user?.id]);
+
+  useEffect(() => {
+    if (user?.id && friends.length > 0) {
+      try {
+        localStorage.setItem(`vertex_cached_friends_${user.id}`, JSON.stringify(friends));
+      } catch {}
+    }
+  }, [friends, user?.id]);
+
+  useEffect(() => {
+    if (activeFriend?.conversation_id && messages.length > 0) {
+      try {
+        localStorage.setItem(`vertex_cached_msgs_${activeFriend.conversation_id}`, JSON.stringify(messages.slice(-60)));
+      } catch {}
+    }
+  }, [messages, activeFriend?.conversation_id]);
 
   // WhatsApp-style scroll listener: Detects if user scrolled up to read history
   const handleScroll = () => {
@@ -349,7 +433,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   // 1. Fetch user's friends and pending requests from Backend (Isolated per user)
   const fetchConnections = async () => {
     if (!user) return;
-    setIsLoadingConnections(true);
+    if (friends.length === 0) {
+      setIsLoadingConnections(true);
+    }
     try {
       const [res, presenceRes] = await Promise.all([
         fetch(`${API_BASE_URL}/api/v1/connections?user_id=${user.id}`),
@@ -394,7 +480,18 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
         // If no active friend selected, select first friend (unless recently deleted chat)
         if (!activeFriendRef.current && allChats.length > 0 && !hasRecentlyDeletedRef.current) {
-          setActiveFriend(allChats[0]);
+          let toSelect = allChats[0];
+          try {
+            const savedUserStr = localStorage.getItem('vertexUser');
+            const uid = savedUserStr ? JSON.parse(savedUserStr)?.id : '';
+            const cachedActive = uid ? localStorage.getItem(`vertex_active_friend_${uid}`) : null;
+            if (cachedActive) {
+              const parsed = JSON.parse(cachedActive);
+              const found = allChats.find(c => c.connection_id === parsed.connection_id || c.user_id === parsed.user_id);
+              if (found) toSelect = found;
+            }
+          } catch {}
+          setActiveFriend(toSelect);
         }
       }
     } catch (e) {
@@ -528,11 +625,30 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     };
   }, [user?.id]);
 
-  // 3. Fetch message history when active friend changes
+  // 3. Fetch message history when active friend changes (with instant cache hydration)
   useEffect(() => {
     if (!activeFriend?.conversation_id) {
       setMessages([]);
+      setIsLoadingMessages(false);
       return;
+    }
+
+    // Load cached messages immediately so UI appears in 0ms!
+    try {
+      const cached = localStorage.getItem(`vertex_cached_msgs_${activeFriend.conversation_id}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && parsed.length > 0) {
+          setMessages(parsed);
+          setIsLoadingMessages(false);
+        } else {
+          setIsLoadingMessages(true);
+        }
+      } else {
+        setIsLoadingMessages(true);
+      }
+    } catch {
+      setIsLoadingMessages(true);
     }
 
     const fetchMessages = async () => {
@@ -647,6 +763,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         }
       } catch (err) {
         console.error('Failed to load messages', err);
+      } finally {
+        setIsLoadingMessages(false);
       }
     };
 
@@ -1958,7 +2076,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         ) : (
           /* Normal Conversations List */
           <div className="flex-1 overflow-y-auto divide-y divide-slate-100/80">
-            {displayedFriends.length === 0 ? (
+            {isLoadingConnections && displayedFriends.length === 0 ? (
+              <SidebarChatsSkeleton />
+            ) : displayedFriends.length === 0 ? (
               <div className="p-8 text-center text-slate-400 text-xs">
                 {chatFilter === 'groups'
                   ? 'No groups found. Click (+) above to create your group!'
@@ -2506,7 +2626,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               </span>
             </div>
 
-            {filteredMessages.length === 0 ? (
+            {isLoadingMessages && filteredMessages.length === 0 ? (
+              <ChatMessagesSkeleton />
+            ) : filteredMessages.length === 0 ? (
               <div className="h-64 flex flex-col items-center justify-center text-center text-slate-400">
                 <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-2">
                   <MessageSquare className="w-6 h-6" />
@@ -2961,6 +3083,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             )}
           </div>
         </div>
+      ) : isLoadingConnections ? (
+        <FullChatPaneSkeleton />
       ) : (
         /* Empty Right Pane when no friend is selected (Laptop/Desktop only) - Executive Vertex Connect Screen */
         <div className="hidden md:flex flex-1 flex-col items-center justify-center text-center p-8 bg-slate-50 text-slate-500 select-none border-b-[6px] border-blue-600">
