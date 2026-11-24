@@ -117,8 +117,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const [isWallpaperModalOpen, setIsWallpaperModalOpen] = useState(false);
   const [chatWallpaper, setChatWallpaper] = useState<'default' | 'doodle' | 'emerald' | 'navy' | 'dark'>('doodle');
   const [isClearChatModalOpen, setIsClearChatModalOpen] = useState(false);
+  const [isDeleteChatModalOpen, setIsDeleteChatModalOpen] = useState(false);
   const [isBlockModalOpen, setIsBlockModalOpen] = useState(false);
-  const [isBlocked, setIsBlocked] = useState(false);
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [reportReason, setReportReason] = useState('Spam or unwanted advertising');
+  const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('vertex_blocked_users');
+      return raw ? new Set(JSON.parse(raw)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  const isBlocked = Boolean(activeFriend?.user_id && blockedUserIds.has(activeFriend.user_id));
   
   // WhatsApp Filter Chips: 'all' | 'unread' | 'favourites' | 'groups' | 'requests'
   const [chatFilter, setChatFilter] = useState<'all' | 'unread' | 'favourites' | 'groups' | 'requests'>('all');
@@ -129,6 +140,25 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const [isNewChatMenuOpen, setIsNewChatMenuOpen] = useState(false);
   const [isAddFriendModalOpen, setIsAddFriendModalOpen] = useState(false);
   const [addFriendInput, setAddFriendInput] = useState('');
+
+  const toggleBlockActiveUser = () => {
+    if (!activeFriend) return;
+    setBlockedUserIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(activeFriend.user_id)) {
+        next.delete(activeFriend.user_id);
+        onShowToast(`Unblocked @${activeFriend.connect_id}`);
+      } else {
+        next.add(activeFriend.user_id);
+        onShowToast(`Blocked @${activeFriend.connect_id}`);
+      }
+      try {
+        localStorage.setItem('vertex_blocked_users', JSON.stringify([...next]));
+      } catch {}
+      return next;
+    });
+    setIsBlockModalOpen(false);
+  };
 
   // Muted Chats with localStorage persistence
   const [mutedChatIds, setMutedChatIds] = useState<Set<string>>(() => {
@@ -1037,11 +1067,29 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     onShowToast('Chat transcript exported successfully!');
   };
 
-  const handleClearChat = () => {
+  const handleClearChat = async () => {
+    if (!activeFriend) return;
+    const convId = activeFriend.conversation_id;
+    if (convId) {
+      try {
+        await fetch(`${API_BASE_URL}/api/v1/messages/clear`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation_id: convId }),
+        });
+      } catch (e) {
+        console.warn('Clear chat error:', e);
+      }
+    }
+    if (activeFriend.connection_id.startsWith('group_')) {
+      try {
+        localStorage.removeItem(`vertex_group_msgs_${activeFriend.connection_id}`);
+      } catch {}
+    }
     setMessages([]);
     setIsClearChatModalOpen(false);
     setIsChatMenuOpen(false);
-    onShowToast('Chat history cleared.');
+    onShowToast('Entire chat history cleared permanently.');
   };
 
   const handleToggleStar = (msgId: string) => {
@@ -1133,9 +1181,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     onShowToast(`Group "${newGroup.name}" created!`);
   };
 
-  const handleDeleteChat = () => {
+  const handleDeleteChat = async () => {
     if (!activeFriend) return;
     const targetId = activeFriend.connection_id;
+    const convId = activeFriend.conversation_id;
+    const friendUserId = activeFriend.user_id;
+    const friendConnectId = activeFriend.connect_id;
+
     if (targetId.startsWith('group_')) {
       const saved = loadSavedGroups();
       const updated = saved.filter(g => g.connection_id !== targetId);
@@ -1143,22 +1195,74 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         localStorage.setItem('vertex_custom_groups', JSON.stringify(updated));
         localStorage.removeItem(`vertex_group_msgs_${targetId}`);
       } catch {}
+    } else {
+      // Direct connection -> delete connection & message history from D1 database permanently
+      try {
+        await fetch(`${API_BASE_URL}/api/v1/connections/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            connection_id: targetId,
+            user_id: user?.id,
+            target_user_id: friendUserId,
+            conversation_id: convId,
+          }),
+        });
+      } catch (e) {
+        console.warn('Delete connection error:', e);
+      }
     }
+
     setFriends(prev => prev.filter(f => f.connection_id !== targetId));
+    setMessages([]);
     setActiveFriend(null);
     setIsChatMenuOpen(false);
-    onShowToast('Chat deleted');
+    setIsDeleteChatModalOpen(false);
+    fetchConnections();
+    onShowToast(`Chat and connection deleted. You can search @${friendConnectId} to send a friend request anytime.`);
   };
 
-  const handleSendCallLink = () => {
-    if (!activeFriend) return;
-    const link = `${window.location.origin}/meet/${activeFriend.conversation_id || activeFriend.user_id}`;
-    navigator.clipboard.writeText(link).then(() => {
-      onShowToast('Call link copied to clipboard! 🔗');
-    }).catch(() => {
-      onShowToast('Call link ready: ' + link);
-    });
+  const handleSendCallLink = async () => {
+    if (!activeFriend || !user) return;
     setIsChatMenuOpen(false);
+    const roomName = `meet_${[user.id, activeFriend.user_id].sort().join('_')}_${Date.now().toString(36)}`;
+    const link = `${window.location.origin}/meet/${roomName}`;
+    const callMsgText = `📹 Join my Vertex Connect call:\n${link}\nClick above to join now.`;
+
+    // Copy to clipboard
+    navigator.clipboard.writeText(link).catch(() => {});
+
+    // Send into conversation directly so the other person receives it in chat!
+    const tempId = `temp_${Date.now()}`;
+    const optimisticMessage: ChatMessage = {
+      id: tempId,
+      conversation_id: activeFriend.conversation_id || '',
+      sender_id: user.id,
+      sender_name: user.name,
+      receiver_id: activeFriend.user_id,
+      content: callMsgText,
+      created_at: new Date().toISOString(),
+      is_read: false,
+      reactions: {},
+    };
+    setMessages(prev => [...prev, optimisticMessage]);
+
+    try {
+      await fetch(`${API_BASE_URL}/api/v1/messages/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: activeFriend.conversation_id,
+          sender_id: user.id,
+          sender_name: user.name,
+          receiver_id: activeFriend.user_id,
+          content: callMsgText,
+        }),
+      });
+      onShowToast('Call link sent to chat & copied to clipboard! 🔗');
+    } catch {
+      onShowToast('Call link copied to clipboard: ' + link);
+    }
   };
 
   // Close menus when clicking outside
@@ -1388,7 +1492,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           </div>
         </div>
 
-        {/* Filter Pills: All, Unread 3, Favourites, Groups, Requests, + */}
+        {/* Filter Pills: All, Unread, Favourites, Groups, Requests, + */}
         <div className="px-3.5 py-2 bg-white flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0 border-b border-slate-100">
           <button
             type="button"
@@ -1411,7 +1515,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70 font-medium'
             }`}
           >
-            Unread 3
+            Unread
           </button>
 
           <button
@@ -1463,40 +1567,6 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           >
             <Plus className="w-3.5 h-3.5" />
           </button>
-        </div>
-
-        {/* Quick Rows: Locked Chats & Requests / Archived */}
-        <div className="bg-white divide-y divide-slate-100 border-b border-slate-100 shrink-0">
-          <div
-            onClick={() => onShowToast('Locked chats are protected with passcode')}
-            className="px-4 py-2.5 flex items-center gap-3 hover:bg-slate-50 transition-colors cursor-pointer"
-          >
-            <Lock className="w-4 h-4 text-blue-600" />
-            <span className="text-xs font-semibold text-slate-700">Locked chats</span>
-          </div>
-
-          <div
-            onClick={() => {
-              if (pendingIncoming.length > 0) {
-                setChatFilter('requests');
-              } else {
-                onShowToast('Archived chats folder');
-              }
-            }}
-            className="px-4 py-2.5 flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer"
-          >
-            <div className="flex items-center gap-3">
-              <Archive className="w-4 h-4 text-slate-400" />
-              <span className="text-xs font-semibold text-slate-700">
-                {pendingIncoming.length > 0 ? `Connection Requests (${pendingIncoming.length})` : 'Archived'}
-              </span>
-            </div>
-            {pendingIncoming.length > 0 && (
-              <span className="px-2 py-0.5 rounded-full bg-blue-600 text-white text-[10px] font-bold animate-pulse">
-                {pendingIncoming.length} new
-              </span>
-            )}
-          </div>
         </div>
 
         {/* Conversations / Search / Requests Container */}
@@ -1737,7 +1807,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       <div className="flex items-center justify-between">
                         <b className="text-sm font-bold text-slate-900 truncate">{f.name}</b>
                         <span className="text-[11px] text-slate-400 font-medium shrink-0">
-                          {isGroup ? 'Group' : f.status === 'online' ? 'online' : 'Thursday'}
+                          {isGroup ? 'Group' : f.status === 'online' ? 'online' : f.last_seen ? new Date(f.last_seen).toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''}
                         </span>
                       </div>
 
@@ -2078,7 +2148,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
-                        onShowToast('Report submitted for safety review');
+                        setIsReportModalOpen(true);
                       }}
                       className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
@@ -2117,7 +2187,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
-                        handleDeleteChat();
+                        setIsDeleteChatModalOpen(true);
                       }}
                       className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-rose-50 text-rose-600 transition-colors text-left cursor-pointer"
                     >
@@ -2527,10 +2597,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 <span>You blocked this contact.</span>
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsBlocked(false);
-                    onShowToast(`Unblocked @${activeFriend.connect_id}`);
-                  }}
+                  onClick={toggleBlockActiveUser}
                   className="font-bold underline text-rose-700 hover:text-rose-900 cursor-pointer ml-1"
                 >
                   Unblock
@@ -2889,10 +2956,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             <div className="p-4 mt-auto">
               <button
                 type="button"
-                onClick={() => {
-                  setIsBlocked(!isBlocked);
-                  onShowToast(isBlocked ? `Unblocked @${activeFriend.connect_id}` : `Blocked @${activeFriend.connect_id}`);
-                }}
+                onClick={toggleBlockActiveUser}
                 className="w-full py-2.5 rounded-xl text-xs font-bold bg-rose-50 hover:bg-rose-100 text-rose-600 flex items-center justify-center gap-2 transition-colors cursor-pointer"
               >
                 <Ban className="w-4 h-4" />
@@ -3215,12 +3279,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       )}
 
       {/* MODAL 6: Clear Chat Modal */}
-      {isClearChatModalOpen && (
+      {isClearChatModalOpen && activeFriend && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="w-full max-w-xs bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
-            <h3 className="font-bold text-sm text-slate-900">Clear this chat?</h3>
-            <p className="text-xs text-slate-500">
-              Messages will only be removed from this device and your chat history.
+            <h3 className="font-bold text-sm text-slate-900">Clear entire chat?</h3>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Are you sure? All messages in this conversation will be permanently deleted from the database and cannot be recovered.
             </p>
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
@@ -3233,9 +3297,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               <button
                 type="button"
                 onClick={handleClearChat}
-                className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white cursor-pointer shadow-sm"
+                className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white cursor-pointer shadow-sm transition-transform active:scale-95"
               >
-                Clear chat
+                Clear all messages
               </button>
             </div>
           </div>
@@ -3247,7 +3311,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="w-full max-w-xs bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
             <h3 className="font-bold text-sm text-slate-900">{isBlocked ? `Unblock @${activeFriend.connect_id}?` : `Block @${activeFriend.connect_id}?`}</h3>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-500 leading-relaxed">
               {isBlocked
                 ? 'Unblocked contacts will be able to call you and send you messages.'
                 : 'Blocked contacts will no longer be able to call you or send you messages.'}
@@ -3262,16 +3326,102 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setIsBlocked(!isBlocked);
-                  setIsBlockModalOpen(false);
-                  onShowToast(isBlocked ? `Unblocked @${activeFriend.connect_id}` : `Blocked @${activeFriend.connect_id}`);
-                }}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold text-white cursor-pointer shadow-sm ${
+                onClick={toggleBlockActiveUser}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold text-white cursor-pointer shadow-sm transition-transform active:scale-95 ${
                   isBlocked ? 'bg-blue-600 hover:bg-blue-700' : 'bg-rose-600 hover:bg-rose-700'
                 }`}
               >
                 {isBlocked ? 'Unblock' : 'Block'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 7b: Delete Chat Modal (Removes Connection so user can re-request) */}
+      {isDeleteChatModalOpen && activeFriend && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-xs bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
+            <div className="flex items-center gap-2 text-rose-600">
+              <Trash2 className="w-5 h-5 text-rose-600" />
+              <h3 className="font-bold text-sm text-slate-900">Delete chat?</h3>
+            </div>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              This will remove <b>{activeFriend.name}</b> (@{activeFriend.connect_id}) from your chats and permanently delete all history and your connection. You can search and send a new friend request anytime.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsDeleteChatModalOpen(false)}
+                className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteChat}
+                className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white cursor-pointer shadow-sm transition-transform active:scale-95"
+              >
+                Delete chat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 7c: Report Contact Modal */}
+      {isReportModalOpen && activeFriend && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
+            <div className="flex items-center justify-between pb-1 border-b border-slate-100">
+              <div className="flex items-center gap-2 text-slate-900">
+                <ThumbsDown className="w-5 h-5 text-rose-500" />
+                <h3 className="font-bold text-sm">Report @{activeFriend.connect_id}</h3>
+              </div>
+              <button type="button" onClick={() => setIsReportModalOpen(false)} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-500">
+              Select a reason for reporting this contact. Our safety team will review recent activity.
+            </p>
+            <div className="space-y-1.5">
+              {[
+                'Spam or unwanted advertising',
+                'Harassment or bullying',
+                'Inappropriate or offensive content',
+                'Impersonation or fake account',
+                'Other safety concern'
+              ].map((reason) => (
+                <label key={reason} className="flex items-center gap-2.5 p-2 rounded-xl hover:bg-slate-50 cursor-pointer text-xs text-slate-700">
+                  <input
+                    type="radio"
+                    name="reportReason"
+                    checked={reportReason === reason}
+                    onChange={() => setReportReason(reason)}
+                    className="text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>{reason}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsReportModalOpen(false)}
+                className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsReportModalOpen(false);
+                  onShowToast(`Report submitted: ${reportReason}. Thank you.`);
+                }}
+                className="px-4 py-1.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white cursor-pointer shadow-sm transition-transform active:scale-95"
+              >
+                Submit Report
               </button>
             </div>
           </div>

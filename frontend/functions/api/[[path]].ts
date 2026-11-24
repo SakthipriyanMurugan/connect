@@ -498,6 +498,36 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     return jsonResponse({ detail: "Missing connection_id" }, 400);
   }
 
+  // 11c. Delete Connection & Chat (Permits sending friend request again later)
+  if ((url.pathname === "/api/v1/connections/delete" || url.pathname === "/api/v1/connections/remove") && request.method === "POST") {
+    try {
+      const body = await getBody();
+      const { connection_id, user_id, target_user_id, conversation_id } = body || {};
+
+      if (env.DB) {
+        if (connection_id) {
+          await env.DB.prepare("DELETE FROM user_connections WHERE id = ?").bind(connection_id).run();
+        }
+        if (user_id && target_user_id) {
+          await env.DB.prepare(
+            "DELETE FROM user_connections WHERE (requester_id = ? AND receiver_id = ?) OR (requester_id = ? AND receiver_id = ?)"
+          ).bind(user_id, target_user_id, target_user_id, user_id).run();
+        }
+        if (conversation_id) {
+          await env.DB.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(conversation_id).run();
+        } else if (user_id && target_user_id) {
+          const directConvId = `direct_${[user_id, target_user_id].sort().join('_')}`;
+          await env.DB.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(directConvId).run();
+        }
+
+        return jsonResponse({ success: true, message: "Connection and chat deleted successfully" });
+      }
+      return jsonResponse({ detail: "Database unavailable" }, 500);
+    } catch (e: any) {
+      return jsonResponse({ detail: e?.message || "Failed to delete connection" }, 500);
+    }
+  }
+
   // 12. Messages History (Native D1 Edge Query)
   if (url.pathname.startsWith("/api/v1/messages/") && request.method === "GET") {
     const conversationId = url.pathname.replace("/api/v1/messages/", "");
@@ -579,6 +609,21 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       console.warn("Mark read edge notice:", e?.message);
     }
     return jsonResponse({ success: true });
+  }
+
+  // 14b. Clear All Messages in Conversation
+  if (url.pathname === "/api/v1/messages/clear" && request.method === "POST") {
+    try {
+      const body = await getBody();
+      const conversationId = body?.conversation_id;
+      if (conversationId && env.DB) {
+        await env.DB.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(conversationId).run();
+        return jsonResponse({ success: true, message: "Chat messages cleared" });
+      }
+      return jsonResponse({ detail: "Missing conversation_id" }, 400);
+    } catch (e: any) {
+      return jsonResponse({ detail: e?.message || "Failed to clear chat" }, 500);
+    }
   }
 
   // 15. Message Reactions

@@ -17,7 +17,7 @@ interface SidebarProps {
   unreadCount?: number;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unreadCount = 3 }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unreadCount = 0 }) => {
   const { user } = useAuth();
 
   const topDockItems = [
@@ -125,7 +125,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
   );
 };
 
-export const MobileBottomNav: React.FC<SidebarProps> = ({ currentPage, onPageChange, unreadCount = 3 }) => {
+export const MobileBottomNav: React.FC<SidebarProps> = ({ currentPage, onPageChange, unreadCount = 0 }) => {
   const mobileNavItems = [
     { id: 'messages' as NavPage, label: 'Chats', icon: MessageSquare, badge: unreadCount },
     { id: 'meetings' as NavPage, label: 'Calls', icon: Phone },
