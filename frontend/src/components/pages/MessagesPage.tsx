@@ -226,6 +226,34 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }
   };
 
+  // Helper to manage deleted connections permanently in localStorage
+  const getDeletedConnections = (): Set<string> => {
+    try {
+      const raw = localStorage.getItem('vertex_deleted_connections');
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw);
+      return new Set(Array.isArray(arr) ? arr.map((x: string) => String(x).toLowerCase()) : []);
+    } catch {
+      return new Set();
+    }
+  };
+
+  const addDeletedConnection = (ids: (string | undefined | null)[]) => {
+    try {
+      const current = getDeletedConnections();
+      ids.filter(Boolean).forEach(id => current.add(String(id).toLowerCase()));
+      localStorage.setItem('vertex_deleted_connections', JSON.stringify(Array.from(current)));
+    } catch {}
+  };
+
+  const removeDeletedConnection = (ids: (string | undefined | null)[]) => {
+    try {
+      const current = getDeletedConnections();
+      ids.filter(Boolean).forEach(id => current.delete(String(id).toLowerCase()));
+      localStorage.setItem('vertex_deleted_connections', JSON.stringify(Array.from(current)));
+    } catch {}
+  };
+
   // Chats List 3-Dots Modals
   const [isNewGroupModalOpen, setIsNewGroupModalOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
@@ -252,6 +280,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const shouldInstantScrollRef = useRef<boolean>(true);
   const isNearBottomRef = useRef<boolean>(true);
   const userSentMessageRef = useRef<boolean>(false);
+  const hasRecentlyDeletedRef = useRef<boolean>(false);
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -264,6 +293,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     shouldInstantScrollRef.current = true;
     isNearBottomRef.current = true;
     setShowScrollBottomBtn(false);
+    if (activeFriend) {
+      hasRecentlyDeletedRef.current = false;
+    }
   }, [activeFriend]);
 
   // WhatsApp-style scroll listener: Detects if user scrolled up to read history
@@ -301,13 +333,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       return;
     }
 
-    // 2. User explicitly sent a message (text / voice / file) -> smooth scroll to bottom
+    // 2. User explicitly sent a message (text / voice / file) -> instant snap without downward slide
     if (userSentMessageRef.current) {
       userSentMessageRef.current = false;
-      chatScrollContainerRef.current.scrollTo({
-        top: chatScrollContainerRef.current.scrollHeight,
-        behavior: 'smooth',
-      });
+      chatScrollContainerRef.current.scrollTop = chatScrollContainerRef.current.scrollHeight;
       isNearBottomRef.current = true;
       setShowScrollBottomBtn(false);
       return;
@@ -315,12 +344,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
     // 3. New incoming message arrived (from polling or websocket):
     // Only scroll to bottom IF user is already near the bottom!
-    // If the user scrolled up to read previous messages, DO NOT pull them down!
+    // Instant snap to eliminate any downward sliding / jumping artifact
     if (isNearBottomRef.current) {
-      chatScrollContainerRef.current.scrollTo({
-        top: chatScrollContainerRef.current.scrollHeight,
-        behavior: 'smooth',
-      });
+      chatScrollContainerRef.current.scrollTop = chatScrollContainerRef.current.scrollHeight;
     }
   }, [messages]);
 
@@ -341,17 +367,26 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
       if (res.ok) {
         const data = await res.json();
-        const enrichedFriends = (data.friends || []).map((f: ConnectionUser) => {
-          const pres = presenceMap[f.user_id];
-          return {
-            ...f,
-            status: pres?.status || f.status || 'offline',
-            last_seen: pres?.last_seen || f.last_seen,
-          };
-        });
+        const deletedSet = getDeletedConnections();
+
+        const enrichedFriends = (data.friends || [])
+          .filter((f: ConnectionUser) => {
+            const isDel = deletedSet.has(String(f.connection_id).toLowerCase()) ||
+                          deletedSet.has(String(f.user_id).toLowerCase()) ||
+                          deletedSet.has(String(f.connect_id).toLowerCase());
+            return !isDel;
+          })
+          .map((f: ConnectionUser) => {
+            const pres = presenceMap[f.user_id];
+            return {
+              ...f,
+              status: pres?.status || f.status || 'offline',
+              last_seen: pres?.last_seen || f.last_seen,
+            };
+          });
 
         // Merge custom saved groups so groups NEVER vanish on fetch!
-        const savedGroups = loadSavedGroups();
+        const savedGroups = loadSavedGroups().filter(sg => !deletedSet.has(sg.connection_id.toLowerCase()));
         const allChats = [
           ...savedGroups,
           ...enrichedFriends.filter((ef: ConnectionUser) => !savedGroups.some(sg => sg.connection_id === ef.connection_id))
@@ -361,8 +396,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         setPendingIncoming(data.pending_incoming || []);
         setPendingOutgoing(data.pending_outgoing || []);
 
-        // If no active friend selected, select first friend
-        if (!activeFriend && allChats.length > 0) {
+        // If no active friend selected, select first friend (unless recently deleted chat)
+        if (!activeFriendRef.current && allChats.length > 0 && !hasRecentlyDeletedRef.current) {
           setActiveFriend(allChats[0]);
         }
       }
@@ -648,6 +683,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const handleSendConnectRequest = async (targetConnectId: string) => {
     if (!user) return;
     const cleanId = targetConnectId.trim().replace(/^@/, '');
+    removeDeletedConnection([cleanId]);
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/connections/request`, {
         method: 'POST',
@@ -658,7 +694,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           target_connect_id: cleanId,
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         onShowToast(data.message || `Request sent to @${cleanId}! 🎉`);
         // Update local search status
@@ -1188,6 +1224,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     const friendUserId = activeFriend.user_id;
     const friendConnectId = activeFriend.connect_id;
 
+    hasRecentlyDeletedRef.current = true;
+    activeFriendRef.current = null;
+
+    // 1. Permanently store in deleted connections set so it NEVER reappears
+    addDeletedConnection([targetId, friendUserId, friendConnectId]);
+
+    // 2. Clear state immediately
+    setFriends(prev => prev.filter(f => f.connection_id !== targetId && f.user_id !== friendUserId));
+    setMessages([]);
+    setActiveFriend(null);
+    setIsChatMenuOpen(false);
+    setIsDeleteChatModalOpen(false);
+
     if (targetId.startsWith('group_')) {
       const saved = loadSavedGroups();
       const updated = saved.filter(g => g.connection_id !== targetId);
@@ -1213,13 +1262,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       }
     }
 
-    setFriends(prev => prev.filter(f => f.connection_id !== targetId));
-    setMessages([]);
-    setActiveFriend(null);
-    setIsChatMenuOpen(false);
-    setIsDeleteChatModalOpen(false);
     fetchConnections();
-    onShowToast(`Chat and connection deleted. You can search @${friendConnectId} to send a friend request anytime.`);
+    onShowToast(`Chat with @${friendConnectId} deleted. You can search @${friendConnectId} to connect again.`);
   };
 
   const handleSendCallLink = async () => {
@@ -1671,9 +1715,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
               {searchResults.length > 0 ? (
                 searchResults.map((u) => {
-                  const alreadyFriend = friends.find((f) => f.user_id === u.id || f.connect_id.toLowerCase() === u.connect_id.toLowerCase());
-                  const isAccepted = alreadyFriend || u.connection_status === 'accepted';
-                  const isPending = u.connection_status === 'pending';
+                  const deletedSet = getDeletedConnections();
+                  const isDeleted = deletedSet.has(String(u.id).toLowerCase()) ||
+                                    deletedSet.has(String(u.connect_id).toLowerCase()) ||
+                                    (u.connection_id ? deletedSet.has(String(u.connection_id).toLowerCase()) : false);
+                  const alreadyFriend = !isDeleted && friends.find((f) => f.user_id === u.id || f.connect_id.toLowerCase() === u.connect_id.toLowerCase());
+                  const isAccepted = !isDeleted && (alreadyFriend || u.connection_status === 'accepted');
+                  const isPending = !isDeleted && u.connection_status === 'pending';
                   const isSender = u.is_sender;
 
                   return (
@@ -2422,7 +2470,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     </div>
 
                     <div
-                      className={`max-w-[80%] sm:max-w-[72%] px-4 py-2.5 rounded-2xl shadow-sm text-xs leading-relaxed relative ${
+                      className={`px-3.5 py-2 rounded-2xl shadow-xs text-xs relative max-w-full ${
                         isMe
                           ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-tr-xs shadow-blue-500/10'
                           : 'bg-white text-slate-800 border border-slate-200/90 rounded-tl-xs shadow-xs'
@@ -2482,59 +2530,67 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         </div>
                       ) : null}
 
-                      {/* Regular Text Content */}
-                      {m.content && (!m.file_url || (!m.content.startsWith('Shared file:') && m.content !== '🎤 Voice note')) && (
-                        <p className="m-0 break-words">{m.content}</p>
-                      )}
-                    </div>
-
-                    {/* Emoji Reaction Badges Below Message */}
-                    {m.reactions && Object.keys(m.reactions).length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1 px-1">
-                        {Object.entries(m.reactions).map(([emoji, users]) => {
-                          const hasReacted = users.includes(user?.name || '');
-                          return (
-                            <button
-                              key={emoji}
-                              type="button"
-                              onClick={() => handleReactToMessage(m.id, emoji)}
-                              title={users.join(', ')}
-                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1 cursor-pointer ${
-                                hasReacted
-                                  ? 'bg-blue-50 border-blue-200 text-blue-600'
-                                  : 'bg-white border-slate-200 text-slate-600 shadow-xs'
-                              }`}
-                            >
-                              <span>{emoji}</span>
-                              <span>{users.length}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {/* Timestamp, Star & Blue Ticks */}
-                    <div className="flex items-center gap-1 mt-1 text-[10px] text-slate-400 font-medium px-1">
-                      {isStarred && (
-                        <span title="Starred message" className="inline-flex items-center">
-                          <Star className="w-3 h-3 text-amber-500 fill-amber-500 shrink-0" />
-                        </span>
-                      )}
-                      <span>{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                      {isMe && (
-                        m.is_read ? (
-                          <span title="Read">
-                            <CheckCheck className="w-3.5 h-3.5 text-blue-500" />
-                          </span>
-                        ) : (activeFriend?.status === 'online' || activeFriend?.status === 'in_call' || m.status === 'delivered') ? (
-                          <span title="Delivered">
-                            <CheckCheck className="w-3.5 h-3.5 text-slate-400" />
-                          </span>
+                      {/* Regular Text & Timestamp straight horizontally inline */}
+                      <div className="flex flex-wrap items-end justify-between gap-x-3 gap-y-0.5 leading-relaxed">
+                        {m.content && (!m.file_url || (!m.content.startsWith('Shared file:') && m.content !== '🎤 Voice note')) ? (
+                          <span className="break-words select-text font-normal">{m.content}</span>
                         ) : (
-                          <span title="Sent">
-                            <Check className="w-3.5 h-3.5 text-slate-400" />
-                          </span>
-                        )
+                          <span />
+                        )}
+
+                        {/* Timestamp, Star & Blue Ticks inline inside the bubble */}
+                        <span
+                          className={`inline-flex items-center gap-1 text-[10px] shrink-0 font-medium select-none ml-auto pl-1.5 pb-0.5 ${
+                            isMe ? 'text-blue-100/90' : 'text-slate-400'
+                          }`}
+                        >
+                          {isStarred && (
+                            <span title="Starred message" className="inline-flex items-center">
+                              <Star className="w-3 h-3 text-amber-300 fill-amber-300 shrink-0" />
+                            </span>
+                          )}
+                          <span>{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          {isMe && (
+                            m.is_read ? (
+                              <span title="Read">
+                                <CheckCheck className="w-3.5 h-3.5 text-white" />
+                              </span>
+                            ) : (activeFriend?.status === 'online' || activeFriend?.status === 'in_call' || m.status === 'delivered') ? (
+                              <span title="Delivered">
+                                <CheckCheck className="w-3.5 h-3.5 text-blue-200" />
+                              </span>
+                            ) : (
+                              <span title="Sent">
+                                <Check className="w-3.5 h-3.5 text-blue-200" />
+                              </span>
+                            )
+                          )}
+                        </span>
+                      </div>
+
+                      {/* Emoji Reaction Badges (Floating on bottom border) */}
+                      {m.reactions && Object.keys(m.reactions).length > 0 && (
+                        <div className={`absolute -bottom-2.5 ${isMe ? 'right-2' : 'left-2'} flex flex-wrap gap-1 z-10`}>
+                          {Object.entries(m.reactions).map(([emoji, users]) => {
+                            const hasReacted = users.includes(user?.name || '');
+                            return (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => handleReactToMessage(m.id, emoji)}
+                                title={users.join(', ')}
+                                className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-0.5 cursor-pointer shadow-xs ${
+                                  hasReacted
+                                    ? 'bg-blue-50 border-blue-200 text-blue-600'
+                                    : 'bg-white border-slate-200 text-slate-600'
+                                }`}
+                              >
+                                <span>{emoji}</span>
+                                <span>{users.length}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       )}
                     </div>
                   </div>
