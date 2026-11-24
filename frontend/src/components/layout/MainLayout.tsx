@@ -20,6 +20,7 @@ const FilesPage = lazy(() => import('../pages/FilesPage').then(m => ({ default: 
 const AnalyticsPage = lazy(() => import('../pages/AnalyticsPage').then(m => ({ default: m.AnalyticsPage })));
 const SettingsPage = lazy(() => import('../pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const CallModal = lazy(() => import('../calling/CallModal').then(m => ({ default: m.CallModal })));
+const CallHistoryModal = lazy(() => import('../calling/CallHistoryModal').then(m => ({ default: m.CallHistoryModal })));
 const MeetingIntelligenceModal = lazy(() => import('../calling/MeetingIntelligenceModal').then(m => ({ default: m.MeetingIntelligenceModal })));
 
 const PageLoaderFallback = () => (
@@ -40,6 +41,7 @@ export const MainLayout: React.FC = () => {
   // Active Calling & LiveKit Session State
   const [activeCallSession, setActiveCallSession] = useState<ActiveCallSession | null>(null);
   const [isCallMinimized, setIsCallMinimized] = useState<boolean>(false);
+  const [isCallHistoryOpen, setIsCallHistoryOpen] = useState<boolean>(false);
   const [incomingCall, setIncomingCall] = useState<IncomingCallData | null>(null);
   const [intelligenceReport, setIntelligenceReport] = useState<MeetingIntelligenceReport | null>(null);
   const [offlineCallModal, setOfflineCallModal] = useState<{
@@ -123,19 +125,25 @@ export const MainLayout: React.FC = () => {
               } else {
                 showToast(data.message || 'Call failed');
               }
-            } else if (data.type === 'call_timeout') {
+            } else if (data.type === 'call_timeout' || data.type === 'call:timeout' || data.type === 'call:missed') {
               stopOutgoingRingtone();
               stopRingtone();
               setIncomingCall(null);
               setActiveCallSession(null);
               setIsCallMinimized(false);
               showToast('Call timed out (Missed Call)');
-            } else if (data.type === 'call_ended') {
+            } else if (data.type === 'call_ended' || data.type === 'call:end' || data.type === 'call:cancel') {
               stopOutgoingRingtone();
               stopRingtone();
               showToast('Call ended by participant.');
               setActiveCallSession(null);
               setIsCallMinimized(false);
+            } else if (data.type === 'call_busy' || data.type === 'call:busy') {
+              stopOutgoingRingtone();
+              stopRingtone();
+              setActiveCallSession(null);
+              setIsCallMinimized(false);
+              showToast(`${data.caller_name || 'Teammate'} is busy on another call.`);
             } else if (data.type === 'device_limit_exceeded') {
               showToast('⚠️ Maximum 3 devices active for your account. Please disconnect another device.');
             }
@@ -196,19 +204,25 @@ export const MainLayout: React.FC = () => {
         } else {
           showToast(data.message || 'Call failed');
         }
-      } else if (data.type === 'call_timeout') {
+      } else if (data.type === 'call_timeout' || data.type === 'call:timeout' || data.type === 'call:missed') {
         stopOutgoingRingtone();
         stopRingtone();
         setIncomingCall(null);
         setActiveCallSession(null);
         setIsCallMinimized(false);
         showToast('Call timed out (Missed Call)');
-      } else if (data.type === 'call_ended') {
+      } else if (data.type === 'call_ended' || data.type === 'call:end' || data.type === 'call:cancel') {
         stopOutgoingRingtone();
         stopRingtone();
         showToast('Call ended by participant.');
         setActiveCallSession(null);
         setIsCallMinimized(false);
+      } else if (data.type === 'call_busy' || data.type === 'call:busy') {
+        stopOutgoingRingtone();
+        stopRingtone();
+        setActiveCallSession(null);
+        setIsCallMinimized(false);
+        showToast(`${data.caller_name || 'Teammate'} is busy on another call.`);
       }
     };
 
@@ -229,7 +243,7 @@ export const MainLayout: React.FC = () => {
   // Start outgoing call
   const handleStartCall = (
     title: string,
-    callType: 'video' | 'audio' = 'video',
+    callType: 'video' | 'audio' | 'voice' = 'video',
     targetUserId?: string,
     targetConnectId?: string,
     customRoomName?: string
@@ -384,6 +398,7 @@ export const MainLayout: React.FC = () => {
                 onStartCall={(name, callType, targetUserId, targetConnectId) =>
                   handleStartCall(name, callType || 'video', targetUserId, targetConnectId)
                 }
+                onOpenCallHistory={() => setIsCallHistoryOpen(true)}
                 onShowToast={showToast}
               />
             )}
@@ -435,6 +450,19 @@ export const MainLayout: React.FC = () => {
             report={intelligenceReport}
             onClose={() => setIntelligenceReport(null)}
             onShowToast={showToast}
+          />
+        )}
+
+        {/* WhatsApp-Style Call History & Redial Modal */}
+        {isCallHistoryOpen && (
+          <CallHistoryModal
+            userId={user?.id || ''}
+            isOpen={isCallHistoryOpen}
+            onClose={() => setIsCallHistoryOpen(false)}
+            onRedial={(name, callType, targetUserId, targetConnectId) => {
+              setIsCallHistoryOpen(false);
+              handleStartCall(name, callType, targetUserId, targetConnectId);
+            }}
           />
         )}
       </Suspense>

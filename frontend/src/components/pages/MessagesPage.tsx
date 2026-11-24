@@ -78,9 +78,10 @@ const getInitials = (name?: string, connectId?: string) => {
 interface MessagesPageProps {
   onStartCall: (name: string, callType?: 'video' | 'audio', targetUserId?: string, targetConnectId?: string) => void;
   onShowToast: (msg: string) => void;
+  onOpenCallHistory?: () => void;
 }
 
-export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowToast }) => {
+export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowToast, onOpenCallHistory }) => {
   const { user } = useAuth();
 
   // Active view tab: 'chats' | 'requests'
@@ -1534,6 +1535,18 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             <h1 className="text-lg font-black text-slate-900 tracking-tight">Vertex Connect</h1>
           </div>
           <div className="flex items-center gap-2">
+            {/* Call History Quick Action */}
+            {onOpenCallHistory && (
+              <button
+                type="button"
+                onClick={onOpenCallHistory}
+                title="Call history & logs"
+                className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-slate-100 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
+              >
+                <Phone className="w-4.5 h-4.5" />
+              </button>
+            )}
+
             {/* Notification Bell Icon for Incoming Connection Requests (Left side of 3-dots) */}
             <div className="relative notification-menu-container">
               <button
@@ -1648,6 +1661,20 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               {/* Chats List Dropdown */}
               {isChatListMenuOpen && (
                 <div className="vertex-menu-container absolute right-0 top-11 w-56 max-h-[min(480px,calc(100vh-80px))] overflow-y-auto overscroll-contain rounded-2xl bg-white border border-slate-200 shadow-2xl z-50 p-2 animate-in fade-in zoom-in-95 duration-150 text-slate-700 [scrollbar-width:thin] [scrollbar-color:#cbd5e1_transparent]">
+                  {onOpenCallHistory && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsChatListMenuOpen(false);
+                        onOpenCallHistory();
+                      }}
+                      className="w-full px-3 py-2 text-xs flex items-center gap-3 rounded-xl hover:bg-blue-50 hover:text-blue-600 transition-colors text-left cursor-pointer font-medium"
+                    >
+                      <Clock className="w-4 h-4 text-blue-600" />
+                      <span>Call history</span>
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     onClick={() => {

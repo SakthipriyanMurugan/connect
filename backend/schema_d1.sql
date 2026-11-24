@@ -60,7 +60,58 @@ CREATE TABLE IF NOT EXISTS call_quality_scorecards (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS calls (
+    id TEXT PRIMARY KEY,
+    caller_id TEXT NOT NULL,
+    call_type TEXT DEFAULT 'video',
+    call_status TEXT DEFAULT 'initiated',
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    answered_at TIMESTAMP,
+    ended_at TIMESTAMP,
+    duration INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS call_participants (
+    id TEXT PRIMARY KEY,
+    call_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    left_at TIMESTAMP,
+    participant_status TEXT DEFAULT 'joined'
+);
+
+CREATE TABLE IF NOT EXISTS call_events (
+    id TEXT PRIMARY KEY,
+    call_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_call_settings (
+    id TEXT PRIMARY KEY,
+    user_id TEXT UNIQUE NOT NULL,
+    allow_voice_calls INTEGER DEFAULT 1,
+    allow_video_calls INTEGER DEFAULT 1,
+    notification_enabled INTEGER DEFAULT 1,
+    privacy_settings TEXT DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS call_notifications (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    notification_type TEXT NOT NULL,
+    is_read INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_connect_id ON users(connect_id);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_connections_users ON user_connections(requester_id, receiver_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_id);
+CREATE INDEX IF NOT EXISTS idx_call_participants_call ON call_participants(call_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_call_events_call ON call_events(call_id);
+CREATE INDEX IF NOT EXISTS idx_call_notifications_user ON call_notifications(user_id);

@@ -93,3 +93,55 @@ class CallQualityScorecard(Base):
     status = Column(String, default="pending_review")  # pending_review, approved, amended
     supervisor_notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class Call(Base):
+    __tablename__ = "calls"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    caller_id = Column(String, ForeignKey("users.id"), index=True, nullable=False)
+    call_type = Column(String, default="video")  # voice, video, group
+    call_status = Column(String, default="initiated")  # initiated, ringing, accepted, rejected, missed, busy, ended, failed
+    started_at = Column(DateTime, default=datetime.utcnow)
+    answered_at = Column(DateTime, nullable=True)
+    ended_at = Column(DateTime, nullable=True)
+    duration = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class CallParticipant(Base):
+    __tablename__ = "call_participants"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    call_id = Column(String, ForeignKey("calls.id"), index=True, nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), index=True, nullable=False)
+    joined_at = Column(DateTime, default=datetime.utcnow)
+    left_at = Column(DateTime, nullable=True)
+    participant_status = Column(String, default="joined")  # invited, ringing, joined, left, rejected, missed, busy
+
+class CallEvent(Base):
+    __tablename__ = "call_events"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    call_id = Column(String, ForeignKey("calls.id"), index=True, nullable=False)
+    event_type = Column(String, nullable=False)  # initiate, ring, accept, reject, end, mute, screen_share, reconnect
+    user_id = Column(String, ForeignKey("users.id"), index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class UserCallSetting(Base):
+    __tablename__ = "user_call_settings"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.id"), unique=True, index=True, nullable=False)
+    allow_voice_calls = Column(Boolean, default=True)
+    allow_video_calls = Column(Boolean, default=True)
+    notification_enabled = Column(Boolean, default=True)
+    privacy_settings = Column(JSON, default=dict)
+
+class CallNotification(Base):
+    __tablename__ = "call_notifications"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.id"), index=True, nullable=False)
+    call_id = Column(String, ForeignKey("calls.id"), index=True, nullable=False)
+    notification_type = Column(String, nullable=False)  # missed, incoming, busy
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

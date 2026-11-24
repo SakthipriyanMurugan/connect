@@ -952,6 +952,249 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     return jsonResponse({ success: true, reactions: {} });
   }
 
+  // 15b. LiveKit Token Generator (Edge JWT Signing with Web Crypto)
+  if (url.pathname === "/api/v1/livekit/token" && request.method === "POST") {
+    try {
+      const body = await getBody();
+      const roomName = body.room_name || `room_${Date.now()}`;
+      const identity = body.participant_identity || `user_${Date.now()}`;
+      const name = body.participant_name || identity;
+
+      const apiKey = "APIFkMSYvVwXjJF";
+      const apiSecret = "MVlBFHjJfCe3yuuTY4WjUiI5LQGdXuMUQtD6AWN9fIgA";
+      const livekitUrl = "wss://connect-jflh7xn8.livekit.cloud";
+
+      const nowSec = Math.floor(Date.now() / 1000);
+      const payload = {
+        sub: identity,
+        iss: apiKey,
+        nbf: nowSec - 5,
+        exp: nowSec + 6 * 3600,
+        name: name,
+        video: {
+          room: roomName,
+          roomJoin: true,
+          canPublish: true,
+          canSubscribe: true,
+        },
+      };
+
+      const enc = new TextEncoder();
+      const header = { alg: "HS256", typ: "JWT" };
+      const b64Header = btoa(JSON.stringify(header)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+      const b64Payload = btoa(JSON.stringify(payload)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+      const message = `${b64Header}.${b64Payload}`;
+
+      const key = await crypto.subtle.importKey(
+        "raw",
+        enc.encode(apiSecret),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"]
+      );
+      const signature = await crypto.subtle.sign("HMAC", key, enc.encode(message));
+      const b64Sig = btoa(String.fromCharCode(...new Uint8Array(signature)))
+        .replace(/=/g, "")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_");
+
+      const jwtToken = `${message}.${b64Sig}`;
+
+      return jsonResponse({
+        success: true,
+        token: jwtToken,
+        url: livekitUrl,
+        room_name: roomName,
+        participant_identity: identity,
+      });
+    } catch (e: any) {
+      return jsonResponse({ success: false, detail: e?.message || "Token generation failed" }, 500);
+    }
+  }
+
+  // 15c. Calling System Endpoints (Turso / KV / D1 Persistence)
+  if (url.pathname === "/api/v1/calls/initiate" && request.method === "POST") {
+    try {
+      const body = await getBody();
+      const { caller_id, target_user_id, call_type, room_name, title } = body || {};
+      const callId = room_name || `call_${crypto.randomUUID()}`;
+      const now = new Date().toISOString();
+
+      const callRecord = {
+        id: callId,
+        caller_id,
+        target_user_id,
+        call_type: call_type || "video",
+        call_status: target_user_id ? "ringing" : "active",
+        started_at: now,
+        created_at: now,
+        duration: 0,
+      };
+
+      if (env.KV) {
+        await env.KV.put(`call:${callId}`, JSON.stringify(callRecord));
+        if (caller_id) await env.KV.put(`user_call:${caller_id}:${now}_${callId}`, JSON.stringify(callRecord));
+        if (target_user_id) await env.KV.put(`user_call:${target_user_id}:${now}_${callId}`, JSON.stringify(callRecord));
+      }
+
+      if (env.DB) {
+        try {
+          await env.DB.prepare(
+            "INSERT INTO calls (id, caller_id, call_type, call_status, started_at, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+          ).bind(callId, caller_id, call_type || "video", target_user_id ? "ringing" : "active", now, now).run();
+        } catch {}
+      }
+
+      // Generate LiveKit token
+      const apiKey = "APIFkMSYvVwXjJF";
+      const apiSecret = "MVlBFHjJfCe3yuuTY4WjUiI5LQGdXuMUQtD6AWN9fIgA";
+      const livekitUrl = "wss://connect-jflh7xn8.livekit.cloud";
+      const nowSec = Math.floor(Date.now() / 1000);
+      const payload = {
+        sub: caller_id || "anon",
+        iss: apiKey,
+        nbf: nowSec - 5,
+        exp: nowSec + 6 * 3600,
+        name: title || caller_id || "User",
+        video: { room: callId, roomJoin: true, canPublish: true, canSubscribe: true },
+      };
+      const enc = new TextEncoder();
+      const b64Header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" })).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+      const b64Payload = btoa(JSON.stringify(payload)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+      const message = `${b64Header}.${b64Payload}`;
+      const key = await crypto.subtle.importKey("raw", enc.encode(apiSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+      const signature = await crypto.subtle.sign("HMAC", key, enc.encode(message));
+      const b64Sig = btoa(String.fromCharCode(...new Uint8Array(signature))).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+      const token = `${message}.${b64Sig}`;
+
+      return jsonResponse({
+        success: true,
+        call_id: callId,
+        room_name: callId,
+        call_type: call_type || "video",
+        call_status: target_user_id ? "ringing" : "active",
+        livekit_token: token,
+        livekit_url: livekitUrl,
+      });
+    } catch (e: any) {
+      return jsonResponse({ success: false, detail: e?.message }, 500);
+    }
+  }
+
+  if (url.pathname === "/api/v1/calls/respond" && request.method === "POST") {
+    try {
+      const body = await getBody();
+      const { call_id, user_id, accepted } = body || {};
+      const now = new Date().toISOString();
+      const newStatus = accepted ? "active" : "rejected";
+
+      if (env.KV && call_id) {
+        try {
+          const prevStr = await env.KV.get(`call:${call_id}`);
+          if (prevStr) {
+            const rec = JSON.parse(prevStr);
+            rec.call_status = newStatus;
+            if (accepted) rec.answered_at = now;
+            else rec.ended_at = now;
+            await env.KV.put(`call:${call_id}`, JSON.stringify(rec));
+          }
+        } catch {}
+      }
+
+      if (env.DB && call_id) {
+        try {
+          await env.DB.prepare(
+            "UPDATE calls SET call_status = ?, answered_at = ? WHERE id = ?"
+          ).bind(newStatus, accepted ? now : null, call_id).run();
+        } catch {}
+      }
+
+      return jsonResponse({ success: true, call_status: newStatus });
+    } catch (e: any) {
+      return jsonResponse({ success: true, call_status: "active" });
+    }
+  }
+
+  if (url.pathname === "/api/v1/calls/end" && request.method === "POST") {
+    try {
+      const body = await getBody();
+      const { call_id, user_id, duration_seconds } = body || {};
+      const now = new Date().toISOString();
+
+      if (env.KV && call_id) {
+        try {
+          const prevStr = await env.KV.get(`call:${call_id}`);
+          if (prevStr) {
+            const rec = JSON.parse(prevStr);
+            rec.call_status = "ended";
+            rec.ended_at = now;
+            rec.duration = duration_seconds || 0;
+            await env.KV.put(`call:${call_id}`, JSON.stringify(rec));
+          }
+        } catch {}
+      }
+
+      if (env.DB && call_id) {
+        try {
+          await env.DB.prepare(
+            "UPDATE calls SET call_status = 'ended', ended_at = ?, duration = ? WHERE id = ?"
+          ).bind(now, duration_seconds || 0, call_id).run();
+        } catch {}
+      }
+
+      return jsonResponse({ success: true, duration: duration_seconds });
+    } catch (e: any) {
+      return jsonResponse({ success: true });
+    }
+  }
+
+  if (url.pathname === "/api/v1/calls/history" && request.method === "GET") {
+    const userId = url.searchParams.get("user_id");
+    const history: any[] = [];
+    if (userId && env.KV) {
+      try {
+        const kvList = await env.KV.list({ prefix: `user_call:${userId}:` });
+        for (const k of (kvList.keys || []).slice(-30)) {
+          const val = await env.KV.get(k.name);
+          if (val) {
+            const c = JSON.parse(val);
+            const isCaller = c.caller_id === userId;
+            const partnerId = isCaller ? c.target_user_id : c.caller_id;
+            history.unshift({
+              id: c.id,
+              call_type: c.call_type || "video",
+              call_status: c.call_status || "ended",
+              duration: c.duration || 0,
+              started_at: c.started_at,
+              ended_at: c.ended_at,
+              created_at: c.created_at || c.started_at,
+              is_caller: isCaller,
+              partner_id: partnerId,
+              partner_name: "Teammate",
+              partner_connect_id: "user",
+              partner_avatar: "",
+            });
+          }
+        }
+      } catch {}
+    }
+    return jsonResponse(history);
+  }
+
+  if (url.pathname === "/api/v1/calls/settings" && request.method === "GET") {
+    return jsonResponse({
+      allow_voice_calls: true,
+      allow_video_calls: true,
+      notification_enabled: true,
+      privacy_settings: {},
+    });
+  }
+
+  if (url.pathname === "/api/v1/calls/settings" && request.method === "PUT") {
+    const body = await getBody();
+    return jsonResponse({ success: true, ...body });
+  }
+
   // 16. Search Users (D1 + KV Overlay - Deduplicated Instagram-Style)
   if (url.pathname === "/api/v1/users/search" && request.method === "GET") {
     const q = (url.searchParams.get("q") || "").trim().toLowerCase().replace("@", "");

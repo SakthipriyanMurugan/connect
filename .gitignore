@@ -36,3 +36,5 @@ cloudflared.exe
 *.zip
 download_cf.py
 mail-relay/
+
+lighthouse*.json

@@ -19,7 +19,18 @@ from sqlalchemy import select, func, or_, and_
 from app.core.config import settings
 from app.db.session import init_db, get_db, AsyncSessionLocal
 from app.db.d1_client import d1
-from app.models.base import User as UserModel, UserConnection as ConnectionModel, Message as MessageModel, MeetingIntelligence as MeetingIntelligenceModel
+from app.models.base import (
+    User as UserModel, 
+    UserConnection as ConnectionModel, 
+    Message as MessageModel, 
+    MeetingIntelligence as MeetingIntelligenceModel,
+    Call as CallModel,
+    CallParticipant as CallParticipantModel,
+    CallEvent as CallEventModel,
+    UserCallSetting as UserCallSettingModel,
+    CallNotification as CallNotificationModel
+)
+from app.services.calling_service import CallingService
 from app.core.security import hash_password, verify_password, create_access_token
 from app.services.email_service import send_otp_email
 from livekit import api as livekit_api
@@ -275,6 +286,32 @@ class LiveKitTokenRequest(BaseModel):
     participant_name: Optional[str] = None
     can_publish: bool = True
     can_subscribe: bool = True
+
+class InitiateCallRequest(BaseModel):
+    caller_id: str
+    target_user_id: Optional[str] = None
+    call_type: str = "video"  # voice, video, group
+    room_name: Optional[str] = None
+    title: Optional[str] = "Call"
+
+class CallRespondRequest(BaseModel):
+    call_id: str
+    user_id: str
+    accepted: bool
+    room_name: Optional[str] = None
+
+class EndCallRequest(BaseModel):
+    call_id: str
+    user_id: str
+    duration_seconds: int = 0
+    room_name: Optional[str] = None
+
+class UpdateCallSettingsRequest(BaseModel):
+    user_id: str
+    allow_voice_calls: Optional[bool] = None
+    allow_video_calls: Optional[bool] = None
+    notification_enabled: Optional[bool] = None
+    privacy_settings: Optional[Dict[str, Any]] = None
 
 class UserResponse(BaseModel):
     id: str
@@ -1326,6 +1363,94 @@ async def get_intelligence_history(db: AsyncSession = Depends(get_db)):
         for r in records
     ]
 
+# 14d. WhatsApp-Style Calling Routes (Turso / SQLite Persistence)
+@app.post(f"{settings.API_V1_STR}/calls/initiate")
+async def initiate_call(req: InitiateCallRequest, db: AsyncSession = Depends(get_db)):
+    call_id = req.room_name or f"call_{uuid.uuid4().hex[:12]}"
+    call = await CallingService.create_call(
+        db=db,
+        call_id=call_id,
+        caller_id=req.caller_id,
+        call_type=req.call_type,
+        target_user_id=req.target_user_id
+    )
+
+    # Generate LiveKit Token if credentials exist
+    livekit_token = None
+    if settings.LIVEKIT_API_KEY and settings.LIVEKIT_API_SECRET:
+        token = livekit_api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET) \
+            .with_identity(req.caller_id) \
+            .with_name(req.title or req.caller_id) \
+            .with_grants(livekit_api.VideoGrants(
+                room_join=True,
+                room=call_id,
+                can_publish=True,
+                can_subscribe=True
+            ))
+        livekit_token = token.to_jwt()
+
+    return {
+        "success": True,
+        "call_id": call.id,
+        "room_name": call_id,
+        "call_type": call.call_type,
+        "call_status": call.call_status,
+        "livekit_token": livekit_token,
+        "livekit_url": settings.LIVEKIT_URL
+    }
+
+@app.post(f"{settings.API_V1_STR}/calls/respond")
+async def respond_call(req: CallRespondRequest, db: AsyncSession = Depends(get_db)):
+    call = await CallingService.respond_to_call(
+        db=db,
+        call_id=req.call_id,
+        user_id=req.user_id,
+        accepted=req.accepted
+    )
+    if not call:
+        return {"success": False, "message": "Call not found"}
+    return {
+        "success": True,
+        "call_id": call.id,
+        "call_status": call.call_status
+    }
+
+@app.post(f"{settings.API_V1_STR}/calls/end")
+async def end_call(req: EndCallRequest, db: AsyncSession = Depends(get_db)):
+    call = await CallingService.end_call(
+        db=db,
+        call_id=req.call_id,
+        user_id=req.user_id,
+        duration_seconds=req.duration_seconds
+    )
+    return {
+        "success": True,
+        "call_id": req.call_id,
+        "duration": req.duration_seconds
+    }
+
+@app.get(f"{settings.API_V1_STR}/calls/history")
+async def get_call_history(user_id: str, limit: int = 50, db: AsyncSession = Depends(get_db)):
+    history = await CallingService.get_call_history(db=db, user_id=user_id, limit=limit)
+    return history
+
+@app.get(f"{settings.API_V1_STR}/calls/settings")
+async def get_call_settings(user_id: str, db: AsyncSession = Depends(get_db)):
+    settings_data = await CallingService.get_call_settings(db=db, user_id=user_id)
+    return settings_data
+
+@app.put(f"{settings.API_V1_STR}/calls/settings")
+async def update_call_settings(req: UpdateCallSettingsRequest, db: AsyncSession = Depends(get_db)):
+    updated = await CallingService.update_call_settings(
+        db=db,
+        user_id=req.user_id,
+        allow_voice=req.allow_voice_calls,
+        allow_video=req.allow_video_calls,
+        notifications=req.notification_enabled,
+        privacy=req.privacy_settings
+    )
+    return updated
+
 # 15. Realtime WebSocket for direct messaging, presence, and WebRTC/LiveKit call signaling
 @app.websocket(f"{settings.API_V1_STR}/ws/{{user_id}}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
@@ -1356,7 +1481,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             elif msg_type == "status_change":
                 new_status = data.get("status", "online")
                 await manager.set_user_status(user_id, new_status)
-            elif msg_type == "call_invite":
+            elif msg_type in ["call_invite", "call:initiate"]:
                 target_user_id = data.get("target_user_id")
                 print(f"[WS Signaling] call_invite from {user_id} to {target_user_id}, room: {data.get('room_name')}")
                 is_target_online = bool(target_user_id and target_user_id in manager.active_users and len(manager.active_users[target_user_id]) > 0)
@@ -1371,24 +1496,34 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "message": "Teammate is currently offline"
                     })
                 else:
-                    await manager.set_user_status(user_id, "in_call")
-                    await manager.send_to_user(target_user_id, {
-                        "type": "incoming_call",
-                        "caller_id": user_id,
-                        "caller_name": data.get("caller_name", "Teammate"),
-                        "caller_connect_id": data.get("caller_connect_id", ""),
-                        "caller_avatar": data.get("caller_avatar", ""),
-                        "room_name": data.get("room_name"),
-                        "call_type": data.get("call_type", "video")
-                    })
-                    await manager.send_to_user(user_id, {
-                        "type": "call_ringing",
-                        "target_user_id": target_user_id,
-                        "room_name": data.get("room_name")
-                    })
-            elif msg_type == "call_response":
+                    # Check if target is already in a call (Busy check)
+                    target_presence = manager.presence.get(target_user_id, {})
+                    if target_presence.get("status") == "in_call":
+                        await manager.send_to_user(user_id, {
+                            "type": "call_busy",
+                            "target_user_id": target_user_id,
+                            "caller_name": data.get("caller_name", "Teammate"),
+                            "message": "Teammate is currently on another call (Busy)"
+                        })
+                    else:
+                        await manager.set_user_status(user_id, "in_call")
+                        await manager.send_to_user(target_user_id, {
+                            "type": "incoming_call",
+                            "caller_id": user_id,
+                            "caller_name": data.get("caller_name", "Teammate"),
+                            "caller_connect_id": data.get("caller_connect_id", ""),
+                            "caller_avatar": data.get("caller_avatar", ""),
+                            "room_name": data.get("room_name"),
+                            "call_type": data.get("call_type", "video")
+                        })
+                        await manager.send_to_user(user_id, {
+                            "type": "call_ringing",
+                            "target_user_id": target_user_id,
+                            "room_name": data.get("room_name")
+                        })
+            elif msg_type in ["call_response", "call:accept", "call:reject"]:
                 target_user_id = data.get("target_user_id")
-                accepted = data.get("accepted", False)
+                accepted = data.get("accepted", False) or (msg_type == "call:accept")
                 print(f"[WS Signaling] call_response from {user_id} to {target_user_id}, accepted: {accepted}")
                 if accepted:
                     await manager.set_user_status(user_id, "in_call")
@@ -1401,7 +1536,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "accepted": accepted,
                         "room_name": data.get("room_name")
                     })
-            elif msg_type == "call_timeout":
+            elif msg_type in ["call_timeout", "call:timeout", "call:missed"]:
                 target_user_id = data.get("target_user_id")
                 print(f"[WS Signaling] call_timeout from {user_id} to {target_user_id}")
                 await manager.set_user_status(user_id, "online")
@@ -1412,7 +1547,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "caller_id": user_id,
                         "room_name": data.get("room_name")
                     })
-            elif msg_type == "call_ended":
+            elif msg_type in ["call_ended", "call:end", "call:cancel"]:
                 target_user_id = data.get("target_user_id")
                 print(f"[WS Signaling] call_ended from {user_id} to {target_user_id}")
                 await manager.set_user_status(user_id, "online")
@@ -1421,6 +1556,41 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     await manager.send_to_user(target_user_id, {
                         "type": "call_ended",
                         "user_id": user_id,
+                        "room_name": data.get("room_name")
+                    })
+            elif msg_type in ["call:offer", "call_offer"]:
+                target_user_id = data.get("target_user_id")
+                if target_user_id:
+                    await manager.send_to_user(target_user_id, {
+                        "type": "call:offer",
+                        "sender_id": user_id,
+                        "sdp": data.get("sdp"),
+                        "room_name": data.get("room_name")
+                    })
+            elif msg_type in ["call:answer", "call_answer"]:
+                target_user_id = data.get("target_user_id")
+                if target_user_id:
+                    await manager.send_to_user(target_user_id, {
+                        "type": "call:answer",
+                        "sender_id": user_id,
+                        "sdp": data.get("sdp"),
+                        "room_name": data.get("room_name")
+                    })
+            elif msg_type in ["call:ice-candidate", "call_ice_candidate"]:
+                target_user_id = data.get("target_user_id")
+                if target_user_id:
+                    await manager.send_to_user(target_user_id, {
+                        "type": "call:ice-candidate",
+                        "sender_id": user_id,
+                        "candidate": data.get("candidate"),
+                        "room_name": data.get("room_name")
+                    })
+            elif msg_type in ["call:screen-share-start", "call:screen-share-stop"]:
+                target_user_id = data.get("target_user_id")
+                if target_user_id:
+                    await manager.send_to_user(target_user_id, {
+                        "type": msg_type,
+                        "sender_id": user_id,
                         "room_name": data.get("room_name")
                     })
             elif msg_type == "read_messages":

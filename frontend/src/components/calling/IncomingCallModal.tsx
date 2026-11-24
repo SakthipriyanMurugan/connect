@@ -8,7 +8,7 @@ export interface IncomingCallData {
   caller_connect_id?: string;
   caller_avatar?: string;
   room_name: string;
-  call_type: 'video' | 'audio';
+  call_type: 'video' | 'audio' | 'voice';
 }
 
 interface IncomingCallModalProps {
