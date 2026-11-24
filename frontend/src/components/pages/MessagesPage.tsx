@@ -1353,7 +1353,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
               {/* Chats List Dropdown */}
               {isChatListMenuOpen && (
-                <div className="vertex-menu-container absolute right-0 top-11 w-56 rounded-2xl bg-white border border-slate-200 shadow-2xl z-50 p-2 animate-in fade-in zoom-in-95 duration-150 text-slate-700">
+                <div className="vertex-menu-container absolute right-0 top-11 w-56 max-h-[min(480px,calc(100vh-80px))] overflow-y-auto overscroll-contain rounded-2xl bg-white border border-slate-200 shadow-2xl z-50 p-2 animate-in fade-in zoom-in-95 duration-150 text-slate-700 [scrollbar-width:thin] [scrollbar-color:#cbd5e1_transparent]">
                   <button
                     type="button"
                     onClick={() => {
@@ -1962,9 +1962,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   <MoreVertical className="w-5 h-5" />
                 </button>
 
-                {/* Chat 3-Dots Dropdown Menu - EXACT 16 ITEMS */}
+                {/* Chat 3-Dots Dropdown Menu - EXACT 16 ITEMS WITH SMOOTH SCROLLING */}
                 {isChatMenuOpen && (
-                  <div className="vertex-menu-container absolute right-0 top-11 w-64 rounded-2xl bg-white shadow-2xl z-50 py-2 border border-slate-200 animate-in fade-in zoom-in-95 duration-100 text-slate-700">
+                  <div className="vertex-menu-container absolute right-0 top-11 w-64 max-h-[min(520px,calc(100vh-80px))] overflow-y-auto overscroll-contain rounded-2xl bg-white shadow-2xl z-50 py-2 border border-slate-200 animate-in fade-in zoom-in-95 duration-100 text-slate-700 [scrollbar-width:thin] [scrollbar-color:#cbd5e1_transparent]">
                     {/* 1. Contact info */}
                     <button
                       type="button"
