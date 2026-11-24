@@ -1399,6 +1399,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
+                  setIsChatListMenuOpen(false);
                   setIsNotificationsOpen(!isNotificationsOpen);
                 }}
                 title={pendingIncoming.length > 0 ? `${pendingIncoming.length} Connection request(s)` : 'Connection requests'}
@@ -1414,7 +1415,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
               {/* Notification Popover Dropdown */}
               {isNotificationsOpen && (
-                <div className="notification-menu-container absolute right-0 top-11 w-80 sm:w-96 max-h-[min(480px,calc(100vh-80px))] overflow-y-auto overscroll-contain rounded-2xl bg-white border border-slate-200 shadow-2xl z-50 p-3 animate-in fade-in zoom-in-95 duration-150 text-slate-800 [scrollbar-width:thin] [scrollbar-color:#cbd5e1_transparent]">
+                <div className="notification-menu-container fixed inset-x-3 top-[68px] sm:absolute sm:inset-x-auto sm:right-[-44px] sm:top-11 sm:w-[350px] max-w-[calc(100vw-24px)] max-h-[min(480px,calc(100vh-80px))] overflow-y-auto overscroll-contain rounded-2xl bg-white border border-slate-200 shadow-2xl z-50 p-3 animate-in fade-in zoom-in-95 duration-150 text-slate-800 [scrollbar-width:thin] [scrollbar-color:#cbd5e1_transparent]">
                   <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-100 px-1">
                     <div className="flex items-center gap-2">
                       <Bell className="w-4 h-4 text-blue-600" />
@@ -1494,6 +1495,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
+                  setIsNotificationsOpen(false);
                   setIsChatListMenuOpen(!isChatListMenuOpen);
                 }}
                 title="Menu"
