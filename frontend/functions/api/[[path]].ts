@@ -96,6 +96,8 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       status: "healthy",
       service: "vertex-connect-cloud-edge-24-7",
       users_count: usersCount,
+      has_kv: Boolean(env.KV),
+      has_db: Boolean(env.DB),
       domain: "vertex-connect.pages.dev",
       active_24_7: true,
     });
@@ -438,32 +440,50 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         }
       }
 
-      // 2. Read live KV overlay for this user
+      // 2. Read live KV overlay for this user (Direct GET for 0ms consistency + list fallback)
       if (env.KV) {
         try {
-          const kvList = await env.KV.list({ prefix: `conn:${userId}:` });
-          for (const k of (kvList.keys || [])) {
-            const valStr = await env.KV.get(k.name);
+          // 2a. Direct GET for every known connection from D1 (Bypasses KV list eventual consistency!)
+          for (const [partnerId, item] of Object.entries(dbConnections)) {
+            let valStr = await env.KV.get(`conn:${userId}:${partnerId}`);
+            if (!valStr && item.connection_id) {
+              valStr = await env.KV.get(`conn_id:${item.connection_id}`);
+            }
             if (valStr) {
               const rec = JSON.parse(valStr);
-              const partnerId = k.name.replace(`conn:${userId}:`, "");
               if (rec.status === "deleted") {
                 delete dbConnections[partnerId];
               } else {
+                dbConnections[partnerId].connection_status = rec.status;
+                if (rec.id || rec.connection_id) {
+                  dbConnections[partnerId].connection_id = rec.id || rec.connection_id;
+                }
+              }
+            }
+          }
+
+          // 2b. Check KV list for newly initiated connections not yet in D1
+          const kvList = await env.KV.list({ prefix: `conn:${userId}:` });
+          for (const k of (kvList.keys || [])) {
+            const partnerId = k.name.replace(`conn:${userId}:`, "");
+            if (dbConnections[partnerId]) continue; // Already processed by direct GET
+            const valStr = await env.KV.get(k.name);
+            if (valStr) {
+              const rec = JSON.parse(valStr);
+              if (rec.status !== "deleted") {
                 const isRequester = rec.requester_id === userId;
                 const partnerName = isRequester ? rec.receiver_name : rec.requester_name;
                 const partnerConnectId = isRequester ? rec.receiver_connect_id : rec.requester_connect_id;
                 const partnerBio = isRequester ? rec.receiver_bio : rec.requester_bio;
 
                 dbConnections[partnerId] = {
-                  ...(dbConnections[partnerId] || {}),
                   connection_id: rec.id || rec.connection_id,
                   user_id: partnerId,
-                  name: partnerName || dbConnections[partnerId]?.name || "User",
-                  connect_id: partnerConnectId || dbConnections[partnerId]?.connect_id || "user",
-                  bio: partnerBio || dbConnections[partnerId]?.bio || "",
+                  name: partnerName || "User",
+                  connect_id: partnerConnectId || "user",
+                  bio: partnerBio || "",
                   status: "online",
-                  avatar: dbConnections[partnerId]?.avatar || "",
+                  avatar: "",
                   created_at: rec.created_at,
                   connection_status: rec.status,
                   requester_id: rec.requester_id,
@@ -581,12 +601,13 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
       if (connId) {
         const now = new Date().toISOString();
+        let byIdStr: string | null = null;
+        let rec: any = null;
 
         // 1. Update in KV
         if (env.KV) {
           try {
-            const byIdStr = await env.KV.get(`conn_id:${connId}`);
-            let rec: any = null;
+            byIdStr = await env.KV.get(`conn_id:${connId}`);
             if (byIdStr) {
               rec = JSON.parse(byIdStr);
             } else if (connId.startsWith("conn_")) {
@@ -622,11 +643,22 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           }
         }
 
-        return jsonResponse({ success: true, message: "Connection accepted!" });
+        return jsonResponse({
+          success: true,
+          message: "Connection accepted!",
+          debug: {
+            connId,
+            hadKv: Boolean(env.KV),
+            byIdFound: Boolean(byIdStr),
+            recStatus: rec?.status,
+            requester_id: rec?.requester_id,
+            receiver_id: rec?.receiver_id,
+          }
+        });
       }
       return jsonResponse({ detail: "Missing connection_id" }, 400);
     } catch (e: any) {
-      return jsonResponse({ success: true, message: "Connection accepted!" });
+      return jsonResponse({ success: false, error: e?.message || String(e), stack: e?.stack }, 500);
     }
   }
 
