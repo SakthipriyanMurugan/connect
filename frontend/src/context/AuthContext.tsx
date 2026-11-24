@@ -31,7 +31,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(() => {
     try {
       const saved = localStorage.getItem('vertexUser');
-      return saved ? JSON.parse(saved) : null;
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (!parsed.name || parsed.name.toLowerCase() === 'hinata') {
+          const cid = parsed.connect_id?.toLowerCase();
+          if (cid === 'sakthi') parsed.name = 'Sakthi';
+          else if (cid === 'nila') parsed.name = 'Nila';
+          else if (parsed.connect_id) parsed.name = parsed.connect_id.charAt(0).toUpperCase() + parsed.connect_id.slice(1);
+        }
+        return parsed;
+      }
+      return null;
     } catch {
       return null;
     }
@@ -183,7 +193,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const data = await res.json();
       if (res.ok) {
-        setUser(data.user);
+        const u = data.user;
+        if (u && (!u.name || u.name.toLowerCase() === 'hinata')) {
+          const cid = u.connect_id?.toLowerCase();
+          if (cid === 'sakthi') u.name = 'Sakthi';
+          else if (cid === 'nila') u.name = 'Nila';
+          else if (u.connect_id) u.name = u.connect_id.charAt(0).toUpperCase() + u.connect_id.slice(1);
+        }
+        setUser(u);
         setToken(data.access_token);
         return { success: true };
       }
@@ -203,7 +220,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const data = await res.json();
       if (res.ok) {
-        setUser(data.user);
+        const u = data.user;
+        if (u && (!u.name || u.name.toLowerCase() === 'hinata')) {
+          const cid = u.connect_id?.toLowerCase();
+          if (cid === 'sakthi') u.name = 'Sakthi';
+          else if (cid === 'nila') u.name = 'Nila';
+          else if (u.connect_id) u.name = u.connect_id.charAt(0).toUpperCase() + u.connect_id.slice(1);
+        }
+        setUser(u);
         setToken(data.access_token);
         return { success: true };
       }

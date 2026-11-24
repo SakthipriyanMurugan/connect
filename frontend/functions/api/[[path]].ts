@@ -167,6 +167,14 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         }
       }
 
+      let resolvedName = user.name || "User";
+      const userCid = (user.connect_id || "").toLowerCase();
+      if (resolvedName.toLowerCase() === "hinata" || !resolvedName) {
+        if (userCid === "sakthi") resolvedName = "Sakthi";
+        else if (userCid === "nila") resolvedName = "Nila";
+        else if (user.connect_id) resolvedName = user.connect_id.charAt(0).toUpperCase() + user.connect_id.slice(1);
+      }
+
       const token = await signJwt({ sub: user.id, exp: Math.floor(Date.now() / 1000) + 7 * 86400 });
       return jsonResponse({
         access_token: token,
@@ -174,7 +182,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         user: {
           id: user.id,
           connect_id: user.connect_id,
-          name: user.name,
+          name: resolvedName,
           email: user.email,
           bio: user.bio || "Hey there! I am using Vertex Connect.",
           role: user.role || "employee",
@@ -224,7 +232,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
             user: {
               id: existing.id,
               connect_id: existing.connect_id,
-              name: existing.name,
+              name: existing.connect_id?.toLowerCase() === "sakthi" ? "Sakthi" : existing.connect_id?.toLowerCase() === "nila" ? "Nila" : ((!existing.name || existing.name.toLowerCase() === "hinata") ? (existing.connect_id.charAt(0).toUpperCase() + existing.connect_id.slice(1)) : existing.name),
               email: existing.email,
               bio: existing.bio,
               role: existing.role,
@@ -421,10 +429,18 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           const { results } = await env.DB.prepare(sql).bind(userId, userId, userId).all();
           for (const r of (results || [])) {
             const partnerId = r.user_id as string;
+            let partnerName = (r.name as string) || "User";
+            const partnerConnectId = (r.connect_id as string) || "";
+            const cid = partnerConnectId.toLowerCase();
+            if (partnerName.toLowerCase() === "hinata" || !partnerName) {
+              if (cid === "sakthi") partnerName = "Sakthi";
+              else if (cid === "nila") partnerName = "Nila";
+              else if (partnerConnectId) partnerName = partnerConnectId.charAt(0).toUpperCase() + partnerConnectId.slice(1);
+            }
             dbConnections[partnerId] = {
               connection_id: r.connection_id,
               user_id: r.user_id,
-              name: r.name,
+              name: partnerName,
               connect_id: r.connect_id,
               bio: r.bio || "",
               status: r.user_status || "online",
@@ -472,8 +488,14 @@ export const onRequest: PagesFunction<Env> = async (context) => {
               const rec = JSON.parse(valStr);
               if (rec.status !== "deleted") {
                 const isRequester = rec.requester_id === userId;
-                const partnerName = isRequester ? rec.receiver_name : rec.requester_name;
+                let partnerName = isRequester ? rec.receiver_name : rec.requester_name;
                 const partnerConnectId = isRequester ? rec.receiver_connect_id : rec.requester_connect_id;
+                const cid = (partnerConnectId || "").toLowerCase();
+                if (!partnerName || partnerName.toLowerCase() === "hinata" || partnerName === "User") {
+                  if (cid === "sakthi") partnerName = "Sakthi";
+                  else if (cid === "nila") partnerName = "Nila";
+                  else if (partnerConnectId) partnerName = partnerConnectId.charAt(0).toUpperCase() + partnerConnectId.slice(1);
+                }
                 const partnerBio = isRequester ? rec.receiver_bio : rec.requester_bio;
 
                 dbConnections[partnerId] = {
@@ -985,10 +1007,18 @@ export const onRequest: PagesFunction<Env> = async (context) => {
             } catch {}
           }
 
+          let displayName = u.name || "User";
+          const cid = (u.connect_id || "").toLowerCase();
+          if (displayName.toLowerCase() === "hinata" || !displayName) {
+            if (cid === "sakthi") displayName = "Sakthi";
+            else if (cid === "nila") displayName = "Nila";
+            else if (u.connect_id) displayName = u.connect_id.charAt(0).toUpperCase() + u.connect_id.slice(1);
+          }
+
           userMap.set(u.id, {
             id: u.id,
             connect_id: u.connect_id,
-            name: u.name,
+            name: displayName,
             email: u.email,
             bio: u.bio || "",
             status: u.status || "online",

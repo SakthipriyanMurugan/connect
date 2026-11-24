@@ -58,6 +58,22 @@ import type { ChatMessage, ConnectionUser, SearchUserResult } from '../../types'
 import { VoiceNotePlayer, sanitizeMediaUrl } from '../chat/VoiceNotePlayer';
 import { API_BASE_URL, WS_BASE_URL } from '../../config/api';
 
+const getDisplayName = (name?: string, connectId?: string) => {
+  const cid = connectId?.toLowerCase();
+  if (!name || name.toLowerCase() === 'hinata') {
+    if (cid === 'sakthi') return 'Sakthi';
+    if (cid === 'nila') return 'Nila';
+    if (connectId) return connectId.charAt(0).toUpperCase() + connectId.slice(1);
+    return 'User';
+  }
+  return name;
+};
+
+const getInitials = (name?: string, connectId?: string) => {
+  const clean = getDisplayName(name, connectId);
+  return clean.slice(0, 2).toUpperCase();
+};
+
 interface MessagesPageProps {
   onStartCall: (name: string, callType?: 'video' | 'audio', targetUserId?: string, targetConnectId?: string) => void;
   onShowToast: (msg: string) => void;
@@ -353,6 +369,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             const pres = presenceMap[f.user_id];
             return {
               ...f,
+              name: getDisplayName(f.name, f.connect_id),
               status: pres?.status || f.status || 'offline',
               last_seen: pres?.last_seen || f.last_seen,
             };
@@ -366,8 +383,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         ];
 
         setFriends(allChats);
-        setPendingIncoming(data.pending_incoming || []);
-        setPendingOutgoing(data.pending_outgoing || []);
+        setPendingIncoming((data.pending_incoming || []).map((f: ConnectionUser) => ({
+          ...f,
+          name: getDisplayName(f.name, f.connect_id)
+        })));
+        setPendingOutgoing((data.pending_outgoing || []).map((f: ConnectionUser) => ({
+          ...f,
+          name: getDisplayName(f.name, f.connect_id)
+        })));
 
         // If no active friend selected, select first friend (unless recently deleted chat)
         if (!activeFriendRef.current && allChats.length > 0 && !hasRecentlyDeletedRef.current) {
@@ -1104,7 +1127,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     setIsChatMenuOpen(false);
     const lines = messages.map(m => {
       const time = new Date(m.created_at).toLocaleString();
-      const sender = m.sender_name || (m.sender_id === user?.id ? user.name : activeFriend.name);
+      const sender = m.sender_name || (m.sender_id === user?.id ? getDisplayName(user?.name, user?.connect_id) : getDisplayName(activeFriend.name, activeFriend.connect_id));
       return `[${time}] ${sender}: ${m.content || m.file_name || 'Attachment'}`;
     });
     const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
@@ -1446,11 +1469,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                           <div className="flex items-center justify-between gap-2.5 mb-2.5">
                             <div className="flex items-center gap-2.5 min-w-0">
                               <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-sky-500 flex items-center justify-center font-bold text-xs text-white shrink-0 shadow-xs ring-2 ring-white">
-                                {req.name ? req.name.slice(0, 2).toUpperCase() : 'U'}
+                                {getInitials(req.name, req.connect_id)}
                               </div>
                               <div className="min-w-0">
                                 <b className="text-xs font-bold text-slate-900 truncate block">@{req.connect_id}</b>
-                                <span className="text-[11px] text-slate-500 block truncate">{req.name}</span>
+                                <span className="text-[11px] text-slate-500 block truncate">{getDisplayName(req.name, req.connect_id)}</span>
                                 {req.bio && <span className="text-[10px] text-slate-400 truncate block mt-0.5">{req.bio}</span>}
                               </div>
                             </div>
@@ -1737,11 +1760,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 <div key={req.connection_id} className="p-3 bg-white rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-sky-500 flex items-center justify-center font-bold text-sm text-white shrink-0 shadow-xs ring-2 ring-white">
-                      {req.name ? req.name.slice(0, 2).toUpperCase() : 'U'}
+                      {getInitials(req.name, req.connect_id)}
                     </div>
                     <div className="min-w-0">
                       <b className="text-xs font-bold text-slate-900 block truncate">@{req.connect_id}</b>
-                      <span className="text-[11px] text-slate-500 font-medium block truncate">{req.name}</span>
+                      <span className="text-[11px] text-slate-500 font-medium block truncate">{getDisplayName(req.name, req.connect_id)}</span>
                       <span className="text-[10px] text-slate-400">Wants to connect with you</span>
                     </div>
                   </div>
@@ -1792,7 +1815,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                         <div className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-sm text-white shadow-sm ${
                           isGroup ? 'bg-gradient-to-tr from-blue-600 to-indigo-600' : 'bg-gradient-to-tr from-blue-500 to-sky-500'
                         }`}>
-                          {isGroup ? <Users className="w-5 h-5 text-white" /> : f.name.slice(0, 2).toUpperCase()}
+                          {isGroup ? <Users className="w-5 h-5 text-white" /> : getInitials(f.name, f.connect_id)}
                         </div>
                         {!isGroup && f.status === 'online' && (
                           <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
@@ -1800,7 +1823,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       </div>
                       <div className="flex-1 min-w-0 pr-1">
                         <div className="flex items-center justify-between">
-                          <b className="text-sm font-bold text-slate-900 truncate">{f.name}</b>
+                          <b className="text-sm font-bold text-slate-900 truncate">{getDisplayName(f.name, f.connect_id)}</b>
                           <span className="text-[10px] text-blue-600 font-semibold bg-blue-50 px-1.5 py-0.5 rounded-md">
                             @{f.connect_id}
                           </span>
@@ -1836,12 +1859,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-sky-500 flex items-center justify-center font-bold text-sm text-white shrink-0 shadow-xs ring-2 ring-white">
-                          {u.name ? u.name.slice(0, 2).toUpperCase() : 'U'}
+                          {getInitials(u.name, u.connect_id)}
                         </div>
                         <div className="min-w-0">
                           <span className="text-sm font-bold text-slate-900 truncate block">@{u.connect_id}</span>
                           <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                            <span className="truncate">{u.name}</span>
+                            <span className="truncate">{getDisplayName(u.name, u.connect_id)}</span>
                             {u.bio && <span className="text-slate-400 truncate max-w-[130px]">· {u.bio}</span>}
                           </div>
                         </div>
@@ -1859,7 +1882,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                                 const newF: ConnectionUser = {
                                   connection_id: u.connection_id || `conn_${[user?.id, u.id].sort().join('_')}`,
                                   user_id: u.id,
-                                  name: u.name,
+                                  name: getDisplayName(u.name, u.connect_id),
                                   connect_id: u.connect_id,
                                   bio: u.bio || '',
                                   status: 'online',
@@ -1961,7 +1984,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                           ? 'bg-gradient-to-tr from-blue-600 to-indigo-600'
                           : 'bg-gradient-to-tr from-blue-500 via-indigo-500 to-sky-500'
                       }`}>
-                        {isGroup ? <Users className="w-6 h-6 text-white" /> : f.name.slice(0, 2).toUpperCase()}
+                        {isGroup ? <Users className="w-6 h-6 text-white" /> : getInitials(f.name, f.connect_id)}
                       </div>
                       {!isGroup && f.status === 'online' && (
                         <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white" />
@@ -1970,7 +1993,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
                     <div className="flex-1 min-w-0 pr-1">
                       <div className="flex items-center justify-between">
-                        <b className="text-sm font-bold text-slate-900 truncate">{f.name}</b>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <b className="text-sm font-bold text-slate-900 truncate">{getDisplayName(f.name, f.connect_id)}</b>
+                          {!isGroup && f.connect_id && (
+                            <span className="text-[10px] text-blue-600 font-bold bg-blue-50 px-1.5 py-0.5 rounded shrink-0">
+                              @{f.connect_id}
+                            </span>
+                          )}
+                        </div>
                         <span className="text-[11px] text-slate-400 font-medium shrink-0">
                           {isGroup ? 'Group' : f.status === 'online' ? 'online' : f.last_seen ? new Date(f.last_seen).toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''}
                         </span>
@@ -2039,7 +2069,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   {activeFriend.connection_id.startsWith('group_') ? (
                     <Users className="w-5 h-5 text-white" />
                   ) : (
-                    activeFriend.name.slice(0, 2).toUpperCase()
+                    getInitials(activeFriend.name, activeFriend.connect_id)
                   )}
                 </div>
                 {!activeFriend.connection_id.startsWith('group_') && activeFriend.status === 'online' && (
@@ -2054,7 +2084,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               >
                 <div className="flex items-center gap-2 truncate">
                   <b className="text-sm font-bold text-slate-900 leading-tight truncate">
-                    {activeFriend.name}
+                    {getDisplayName(activeFriend.name, activeFriend.connect_id)}
                   </b>
                   <span className="text-[10px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full shrink-0">
                     @{activeFriend.connect_id}
@@ -2088,7 +2118,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             <div className="flex items-center gap-1 text-slate-600">
               <button
                 type="button"
-                onClick={() => onStartCall(activeFriend.name, 'video', activeFriend.user_id, activeFriend.connect_id)}
+                onClick={() => onStartCall(getDisplayName(activeFriend.name, activeFriend.connect_id), 'video', activeFriend.user_id, activeFriend.connect_id)}
                 title="Video call"
                 className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-blue-50 text-slate-600 hover:text-blue-600 transition-colors cursor-pointer"
               >
@@ -2096,7 +2126,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               </button>
               <button
                 type="button"
-                onClick={() => onStartCall(activeFriend.name, 'audio', activeFriend.user_id, activeFriend.connect_id)}
+                onClick={() => onStartCall(getDisplayName(activeFriend.name, activeFriend.connect_id), 'audio', activeFriend.user_id, activeFriend.connect_id)}
                 title="Voice call"
                 className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-blue-50 text-slate-600 hover:text-blue-600 transition-colors cursor-pointer"
               >
@@ -2297,7 +2327,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
-                        onStartCall(activeFriend.name, 'video', activeFriend.user_id, activeFriend.connect_id);
+                        onStartCall(getDisplayName(activeFriend.name, activeFriend.connect_id), 'video', activeFriend.user_id, activeFriend.connect_id);
                       }}
                       className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
@@ -2719,7 +2749,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             {isTyping && (
               <div className="flex items-center gap-2.5 p-2 px-3.5 max-w-[130px] rounded-2xl bg-white border border-slate-200 shadow-xs animate-in fade-in duration-200 mb-2">
                 <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-[10px] font-bold text-blue-600 shrink-0">
-                  {activeFriend.name.slice(0, 2).toUpperCase()}
+                  {getInitials(activeFriend.name, activeFriend.connect_id)}
                 </div>
                 <div className="flex items-center gap-1 py-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-bounce [animation-delay:-0.3s]" />
@@ -2970,11 +3000,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             </button>
 
             <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-black text-2xl mx-auto shadow-lg mb-3">
-              {selectedUserPreview.name.slice(0, 2).toUpperCase()}
+              {getInitials(selectedUserPreview.name, selectedUserPreview.connect_id)}
             </div>
 
             <h3 className="text-lg font-bold text-slate-900 leading-snug">
-              {selectedUserPreview.name}
+              {getDisplayName(selectedUserPreview.name, selectedUserPreview.connect_id)}
             </h3>
             <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded-full inline-block mt-0.5 mb-2">
               @{selectedUserPreview.connect_id}
@@ -3038,9 +3068,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             {/* Profile Overview */}
             <div className="p-6 flex flex-col items-center text-center border-b border-slate-100 bg-slate-50">
               <div className="w-24 h-24 rounded-3xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-black text-3xl shadow-xl mb-3">
-                {activeFriend.name.slice(0, 2).toUpperCase()}
+                {getInitials(activeFriend.name, activeFriend.connect_id)}
               </div>
-              <h2 className="text-lg font-bold text-slate-900">{activeFriend.name}</h2>
+              <h2 className="text-lg font-bold text-slate-900">{getDisplayName(activeFriend.name, activeFriend.connect_id)}</h2>
               <span className="text-xs text-blue-600 font-semibold mt-0.5 bg-blue-50 px-2.5 py-0.5 rounded-full">@{activeFriend.connect_id}</span>
               <span className="text-[11px] text-slate-500 mt-1 capitalize">{activeFriend.status}</span>
             </div>
@@ -3317,7 +3347,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             </div>
 
             <p className="text-xs text-slate-500">
-              Organize your chats with tags. Select a custom list for <b>{activeFriend.name}</b>:
+              Organize your chats with tags. Select a custom list for <b>{getDisplayName(activeFriend.name, activeFriend.connect_id)}</b>:
             </p>
 
             <div className="space-y-2">
@@ -3520,7 +3550,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               <h3 className="font-bold text-sm text-slate-900">Delete chat?</h3>
             </div>
             <p className="text-xs text-slate-500 leading-relaxed">
-              This will remove <b>{activeFriend.name}</b> (@{activeFriend.connect_id}) from your chats and permanently delete all history and your connection. You can search and send a new friend request anytime.
+              This will remove <b>{getDisplayName(activeFriend.name, activeFriend.connect_id)}</b> (@{activeFriend.connect_id}) from your chats and permanently delete all history and your connection. You can search and send a new friend request anytime.
             </p>
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
@@ -3647,10 +3677,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       >
                         <div className="flex items-center gap-2.5">
                           <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-xs font-bold text-white shadow-xs">
-                            {f.name.slice(0, 2).toUpperCase()}
+                            {getInitials(f.name, f.connect_id)}
                           </div>
                           <div>
-                            <span className="text-xs font-semibold block text-slate-900">{f.name}</span>
+                            <span className="text-xs font-semibold block text-slate-900">{getDisplayName(f.name, f.connect_id)}</span>
                             <span className="text-[10px] text-slate-400">@{f.connect_id}</span>
                           </div>
                         </div>
