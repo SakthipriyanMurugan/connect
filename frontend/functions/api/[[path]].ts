@@ -441,7 +441,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   // 10. Send Connection Request
   if (url.pathname === "/api/v1/connections/request" && request.method === "POST") {
     const body = await getBody();
-    const requesterId = body.requester_id;
+    const requesterId = body.requester_id || body.from_user_id;
     const targetConnectId = (body.target_connect_id || "").trim().toLowerCase().replace("@", "");
 
     if (requesterId && targetConnectId && env.DB) {
@@ -449,12 +449,18 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       if (!targetUser) {
         return jsonResponse({ detail: `User @${targetConnectId} not found.` }, 404);
       }
+      if (targetUser.id === requesterId) {
+        return jsonResponse({ detail: "You cannot send a friend request to yourself." }, 400);
+      }
       const existing = await env.DB.prepare(
-        "SELECT id FROM user_connections WHERE (requester_id = ? AND receiver_id = ?) OR (requester_id = ? AND receiver_id = ?)"
+        "SELECT id, status FROM user_connections WHERE (requester_id = ? AND receiver_id = ?) OR (requester_id = ? AND receiver_id = ?)"
       ).bind(requesterId, targetUser.id, targetUser.id, requesterId).first();
 
       if (existing) {
-        return jsonResponse({ success: true, message: "Connection request already sent!" });
+        return jsonResponse({
+          success: true,
+          message: existing.status === 'accepted' ? "You are already connected!" : "Connection request already pending!"
+        });
       }
 
       const connId = crypto.randomUUID();
@@ -477,6 +483,17 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       await env.DB.prepare("UPDATE user_connections SET status = 'accepted', updated_at = ? WHERE id = ?")
         .bind(now, connId).run();
       return jsonResponse({ success: true, message: "Connection accepted!" });
+    }
+    return jsonResponse({ detail: "Missing connection_id" }, 400);
+  }
+
+  // 11b. Decline / Reject Connection Request
+  if ((url.pathname === "/api/v1/connections/decline" || url.pathname === "/api/v1/connections/reject") && request.method === "POST") {
+    const body = await getBody();
+    const connId = body.connection_id;
+    if (connId && env.DB) {
+      await env.DB.prepare("DELETE FROM user_connections WHERE id = ?").bind(connId).run();
+      return jsonResponse({ success: true, message: "Connection request declined" });
     }
     return jsonResponse({ detail: "Missing connection_id" }, 400);
   }
@@ -571,27 +588,65 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
   // 16. Search Users
   if (url.pathname === "/api/v1/users/search" && request.method === "GET") {
-    const q = url.searchParams.get("q") || "";
+    const q = (url.searchParams.get("q") || "").trim().toLowerCase().replace("@", "");
     const currentUserId = url.searchParams.get("current_user_id") || "";
     if (q && env.DB) {
       try {
-        const queryTerm = `%${q.trim().toLowerCase().replace("@", "")}%`;
+        const queryTerm = `%${q}%`;
         const sql = `
-          SELECT id, connect_id, email, name, bio, role, status, avatar, created_at
-          FROM users
-          WHERE lower(connect_id) LIKE ? OR lower(name) LIKE ? OR lower(email) LIKE ?
-          LIMIT 20;
+          SELECT 
+            u.id, u.connect_id, u.email, u.name, u.bio, u.role, u.status, u.avatar, u.created_at,
+            c.id as connection_id,
+            c.status as connection_status,
+            (CASE WHEN c.requester_id = ? THEN 1 ELSE 0 END) as is_sender
+          FROM users u
+          LEFT JOIN user_connections c ON (
+            (c.requester_id = ? AND c.receiver_id = u.id) OR 
+            (c.requester_id = u.id AND c.receiver_id = ?)
+          )
+          WHERE (lower(u.connect_id) LIKE ? OR lower(u.name) LIKE ? OR lower(u.email) LIKE ?)
+            AND u.id != ?
+          LIMIT 25;
         `;
-        const { results } = await env.DB.prepare(sql).bind(queryTerm, queryTerm, queryTerm).all();
-        const users = (results || []).filter((u: any) => u.id !== currentUserId).map((u: any) => ({
-          ...u,
-          connection_status: "none",
-          connection_id: null,
-          is_sender: false,
+        const { results } = await env.DB.prepare(sql).bind(
+          currentUserId, currentUserId, currentUserId,
+          queryTerm, queryTerm, queryTerm,
+          currentUserId
+        ).all();
+
+        const users = (results || []).map((u: any) => ({
+          id: u.id,
+          connect_id: u.connect_id,
+          name: u.name,
+          email: u.email,
+          bio: u.bio || "",
+          status: u.status || "online",
+          avatar: u.avatar || "",
+          connection_status: u.connection_status || "none",
+          connection_id: u.connection_id || null,
+          is_sender: Boolean(u.is_sender),
         }));
         return jsonResponse(users);
       } catch (e: any) {
-        return jsonResponse([]);
+        try {
+          const fallbackSql = `
+            SELECT id, connect_id, email, name, bio, role, status, avatar, created_at
+            FROM users
+            WHERE (lower(connect_id) LIKE ? OR lower(name) LIKE ? OR lower(email) LIKE ?)
+              AND id != ?
+            LIMIT 25;
+          `;
+          const { results } = await env.DB.prepare(fallbackSql).bind(queryTerm, queryTerm, queryTerm, currentUserId).all();
+          const users = (results || []).map((u: any) => ({
+            ...u,
+            connection_status: "none",
+            connection_id: null,
+            is_sender: false,
+          }));
+          return jsonResponse(users);
+        } catch {
+          return jsonResponse([]);
+        }
       }
     }
     return jsonResponse([]);
