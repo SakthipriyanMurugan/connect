@@ -37,7 +37,7 @@ services:
       - key: SMTP_USER
         value: "sakthihinata1205@gmail.com"
       - key: SMTP_PASSWORD
-        value: "dudxopepkvpszqky"
+        value: "retqanbxgcmvrtmp"
       - key: FROM_EMAIL
         value: "sakthihinata1205@gmail.com"
       - key: FROM_NAME

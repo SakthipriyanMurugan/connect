@@ -279,22 +279,33 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     }
 
     try {
-      await fetch("https://api.mailchannels.net/tx/v1/send", {
+      await fetch("https://vertex-mail-relay.feelit.workers.dev", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer vertex-super-secret-mail-relay-key-2026",
+        },
         body: JSON.stringify({
-          personalizations: [{ to: [{ email: cleanEmail }] }],
-          from: { email: "no-reply@vertex-connect.pages.dev", name: "VERTEX CONNECT" },
-          subject: `Your VERTEX CONNECT Verification Code: ${code}`,
-          content: [
-            {
-              type: "text/plain",
-              value: `Your VERTEX CONNECT security verification code is: ${code}\nThis code is valid for 10 minutes.`,
-            },
-          ],
+          to: cleanEmail,
+          subject: `${code} is your VERTEX CONNECT verification code`,
+          html: `
+            <div style="font-family: Arial, sans-serif; background: #0f172a; color: #f8fafc; padding: 32px; border-radius: 16px; max-width: 480px; margin: auto; text-align: center;">
+              <h1 style="color: #38bdf8; margin-bottom: 8px;">VERTEX CONNECT</h1>
+              <p style="color: #94a3b8; font-size: 14px; margin-top: 0;">Secure Identity & Verification</p>
+              <div style="background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 24px; margin: 24px 0;">
+                <p style="color: #cbd5e1; font-size: 14px; margin: 0 0 12px 0;">Your one-time security code is:</p>
+                <div style="font-size: 36px; font-weight: bold; letter-spacing: 6px; color: #38bdf8;">${code}</div>
+                <p style="color: #64748b; font-size: 12px; margin: 12px 0 0 0;">Valid for 10 minutes. Never share this code with anyone.</p>
+              </div>
+              <p style="color: #64748b; font-size: 11px;">If you didn't request this code, you can safely ignore this email.</p>
+            </div>
+          `,
+          text: `Your VERTEX CONNECT verification code is: ${code}\nThis code is valid for 10 minutes.`,
         }),
       });
-    } catch {}
+    } catch (e: any) {
+      console.warn("Mail relay dispatch notice:", e?.message);
+    }
 
     return jsonResponse({
       success: true,

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     SMTP_SERVER: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
     SMTP_USER: str = os.getenv("SMTP_USER", "sakthihinata1205@gmail.com")
-    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "dudxopepkvpszqky")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "retqanbxgcmvrtmp")
     FROM_EMAIL: str = os.getenv("FROM_EMAIL", "sakthihinata1205@gmail.com")
     FROM_NAME: str = os.getenv("FROM_NAME", "VERTEX CONNECT")
 
