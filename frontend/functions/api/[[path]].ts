@@ -586,29 +586,26 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         if (env.KV) {
           try {
             const byIdStr = await env.KV.get(`conn_id:${connId}`);
+            let rec: any = null;
             if (byIdStr) {
-              const rec = JSON.parse(byIdStr);
+              rec = JSON.parse(byIdStr);
+            } else if (connId.startsWith("conn_")) {
+              const parts = connId.replace("conn_", "").split("_");
+              if (parts.length === 2) {
+                rec = {
+                  id: connId,
+                  connection_id: connId,
+                  requester_id: parts[0],
+                  receiver_id: parts[1],
+                };
+              }
+            }
+            if (rec) {
               rec.status = "accepted";
               rec.updated_at = now;
               await env.KV.put(`conn_id:${connId}`, JSON.stringify(rec));
               await env.KV.put(`conn:${rec.requester_id}:${rec.receiver_id}`, JSON.stringify(rec));
               await env.KV.put(`conn:${rec.receiver_id}:${rec.requester_id}`, JSON.stringify(rec));
-            } else if (userId) {
-              const kvList = await env.KV.list({ prefix: `conn:${userId}:` });
-              for (const k of (kvList.keys || [])) {
-                const valStr = await env.KV.get(k.name);
-                if (valStr) {
-                  const rec = JSON.parse(valStr);
-                  if (rec.id === connId || rec.connection_id === connId) {
-                    rec.status = "accepted";
-                    rec.updated_at = now;
-                    await env.KV.put(k.name, JSON.stringify(rec));
-                    await env.KV.put(`conn:${rec.requester_id}:${rec.receiver_id}`, JSON.stringify(rec));
-                    await env.KV.put(`conn:${rec.receiver_id}:${rec.requester_id}`, JSON.stringify(rec));
-                    await env.KV.put(`conn_id:${connId}`, JSON.stringify(rec));
-                  }
-                }
-              }
             }
           } catch (e: any) {
             console.warn("KV accept notice:", e?.message);
@@ -675,13 +672,25 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     try {
       const body = await getBody();
       const { connection_id, user_id, target_user_id, conversation_id } = body || {};
+      const now = new Date().toISOString();
 
-      if (env.KV && user_id && target_user_id) {
+      if (env.KV) {
         try {
-          const rec = { status: "deleted" };
-          await env.KV.put(`conn:${user_id}:${target_user_id}`, JSON.stringify(rec));
-          await env.KV.put(`conn:${target_user_id}:${user_id}`, JSON.stringify(rec));
-          if (connection_id) await env.KV.delete(`conn_id:${connection_id}`);
+          const rec = { status: "deleted", updated_at: now };
+          if (user_id && target_user_id) {
+            await env.KV.put(`conn:${user_id}:${target_user_id}`, JSON.stringify(rec));
+            await env.KV.put(`conn:${target_user_id}:${user_id}`, JSON.stringify(rec));
+          }
+          if (connection_id) {
+            await env.KV.put(`conn_id:${connection_id}`, JSON.stringify(rec));
+          }
+          if (conversation_id) {
+            await env.KV.put(`cleared:${conversation_id}`, now);
+            const kvList = await env.KV.list({ prefix: `msg:${conversation_id}:` });
+            for (const k of (kvList.keys || [])) {
+              await env.KV.delete(k.name);
+            }
+          }
         } catch (e: any) {
           console.warn("KV delete notice:", e?.message);
         }
@@ -720,6 +729,15 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       try {
         const msgMap: Record<string, any> = {};
 
+        // Check if conversation was cleared
+        let clearedAt: string | null = null;
+        if (env.KV) {
+          try {
+            clearedAt = await env.KV.get(`cleared:${conversationId}`);
+          } catch {}
+        }
+        const clearedTime = clearedAt ? new Date(clearedAt).getTime() : 0;
+
         if (env.DB) {
           try {
             const sql = `
@@ -732,6 +750,9 @@ export const onRequest: PagesFunction<Env> = async (context) => {
             `;
             const { results } = await env.DB.prepare(sql).bind(conversationId).all();
             for (const m of (results || [])) {
+              if (clearedTime && new Date(m.created_at as string).getTime() <= clearedTime) {
+                continue;
+              }
               msgMap[m.id as string] = {
                 ...m,
                 reactions: {},
@@ -748,6 +769,9 @@ export const onRequest: PagesFunction<Env> = async (context) => {
               const valStr = await env.KV.get(k.name);
               if (valStr) {
                 const m = JSON.parse(valStr);
+                if (clearedTime && new Date(m.created_at).getTime() <= clearedTime) {
+                  continue;
+                }
                 msgMap[m.id] = m;
               }
             }
@@ -844,8 +868,10 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       const body = await getBody();
       const conversationId = body?.conversation_id;
       if (conversationId) {
+        const now = new Date().toISOString();
         if (env.KV) {
           try {
+            await env.KV.put(`cleared:${conversationId}`, now);
             const kvList = await env.KV.list({ prefix: `msg:${conversationId}:` });
             for (const k of (kvList.keys || [])) {
               await env.KV.delete(k.name);
@@ -872,7 +898,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     return jsonResponse({ success: true, reactions: {} });
   }
 
-  // 16. Search Users (D1 + KV Overlay)
+  // 16. Search Users (D1 + KV Overlay - Deduplicated Instagram-Style)
   if (url.pathname === "/api/v1/users/search" && request.method === "GET") {
     const q = (url.searchParams.get("q") || "").trim().toLowerCase().replace("@", "");
     const currentUserId = url.searchParams.get("current_user_id") || "";
@@ -900,8 +926,10 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           currentUserId
         ).all();
 
-        const users: any[] = [];
+        const userMap = new Map<string, any>();
         for (const u of (results || [])) {
+          if (userMap.has(u.id)) continue; // Deduplicate so each user appears exactly once!
+
           let connStatus = u.connection_status || "none";
           let connId = u.connection_id || null;
           let isSender = Boolean(u.is_sender);
@@ -925,7 +953,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
             } catch {}
           }
 
-          users.push({
+          userMap.set(u.id, {
             id: u.id,
             connect_id: u.connect_id,
             name: u.name,
@@ -938,7 +966,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
             is_sender: isSender,
           });
         }
-        return jsonResponse(users);
+        return jsonResponse(Array.from(userMap.values()));
       } catch (e: any) {
         return jsonResponse([]);
       }

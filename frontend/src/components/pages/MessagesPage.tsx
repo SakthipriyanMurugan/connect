@@ -227,33 +227,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }
   };
 
-  // Helper to manage deleted connections permanently in localStorage
-  const getDeletedConnections = (): Set<string> => {
+  // Clean up legacy localStorage deleted connections key on load so connections sync naturally
+  useEffect(() => {
     try {
-      const raw = localStorage.getItem('vertex_deleted_connections');
-      if (!raw) return new Set();
-      const arr = JSON.parse(raw);
-      return new Set(Array.isArray(arr) ? arr.map((x: string) => String(x).toLowerCase()) : []);
-    } catch {
-      return new Set();
-    }
-  };
-
-  const addDeletedConnection = (ids: (string | undefined | null)[]) => {
-    try {
-      const current = getDeletedConnections();
-      ids.filter(Boolean).forEach(id => current.add(String(id).toLowerCase()));
-      localStorage.setItem('vertex_deleted_connections', JSON.stringify(Array.from(current)));
+      localStorage.removeItem('vertex_deleted_connections');
     } catch {}
-  };
-
-  const removeDeletedConnection = (ids: (string | undefined | null)[]) => {
-    try {
-      const current = getDeletedConnections();
-      ids.filter(Boolean).forEach(id => current.delete(String(id).toLowerCase()));
-      localStorage.setItem('vertex_deleted_connections', JSON.stringify(Array.from(current)));
-    } catch {}
-  };
+  }, []);
 
   // Chats List 3-Dots Modals
   const [isNewGroupModalOpen, setIsNewGroupModalOpen] = useState(false);
@@ -368,15 +347,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
       if (res.ok) {
         const data = await res.json();
-        const deletedSet = getDeletedConnections();
 
         const enrichedFriends = (data.friends || [])
-          .filter((f: ConnectionUser) => {
-            const isDel = deletedSet.has(String(f.connection_id).toLowerCase()) ||
-                          deletedSet.has(String(f.user_id).toLowerCase()) ||
-                          deletedSet.has(String(f.connect_id).toLowerCase());
-            return !isDel;
-          })
           .map((f: ConnectionUser) => {
             const pres = presenceMap[f.user_id];
             return {
@@ -387,7 +359,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           });
 
         // Merge custom saved groups so groups NEVER vanish on fetch!
-        const savedGroups = loadSavedGroups().filter(sg => !deletedSet.has(sg.connection_id.toLowerCase()));
+        const savedGroups = loadSavedGroups();
         const allChats = [
           ...savedGroups,
           ...enrichedFriends.filter((ef: ConnectionUser) => !savedGroups.some(sg => sg.connection_id === ef.connection_id))
@@ -570,16 +542,18 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
           headers: { 'Cache-Control': 'no-cache' },
         });
         if (res.ok) {
-          const data: ChatMessage[] = await res.json();
+          const rawData: any[] = await res.json();
+          const data: ChatMessage[] = (rawData || []).map((m: any) => ({
+            ...m,
+            is_me: m.sender_id === user?.id,
+          }));
           setMessages((prev) => {
             if (!data) return prev;
 
             const serverIds = new Set(data.map((d) => d.id));
             const now = Date.now();
 
-            // Preserved messages:
-            // 1. Any optimistic message with id starting with 'temp_' (unless server returned exact match within 15s)
-            // 2. Any recent message sent by this user (within 60s) not yet present in server query
+            // Preserved messages (keep optimistic messages so they never flicker or disappear):
             const preserved = prev.filter((m) => {
               if (serverIds.has(m.id)) return false;
 
@@ -589,7 +563,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                   (d) =>
                     d.sender_id === m.sender_id &&
                     d.content === m.content &&
-                    Math.abs(new Date(d.created_at).getTime() - tempTime) < 15000
+                    Math.abs(new Date(d.created_at).getTime() - tempTime) < 30000
                 );
                 return !serverHasIt;
               }
@@ -597,8 +571,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               const isMine = m.sender_id === user?.id || m.is_me;
               if (isMine) {
                 const msgTime = new Date(m.created_at).getTime();
-                if (!isNaN(msgTime) && now - msgTime < 60000) {
-                  return true;
+                if (!isNaN(msgTime) && now - msgTime < 30000) {
+                  const serverHasIt = data.some(
+                    (d) => d.content === m.content && Math.abs(new Date(d.created_at).getTime() - msgTime) < 30000
+                  );
+                  return !serverHasIt;
                 }
               }
 
@@ -657,10 +634,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     return () => clearInterval(pollInterval);
   }, [activeFriend]);
 
-  // 4. Search Users by Connect ID or Name
+  // 4. Search Users by Connect ID or Name (Instagram-style Instant Search)
   useEffect(() => {
     const raw = (friendSearchTerm || searchQuery).trim().replace(/^@/, '');
-    if (!raw || raw.length < 2 || !user) {
+    if (!raw || raw.length < 1 || !user) {
       setSearchResults([]);
       setIsSearching(false);
       return;
@@ -681,16 +658,25 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       } finally {
         setIsSearching(false);
       }
-    }, 250);
+    }, 200);
 
     return () => clearTimeout(timer);
   }, [friendSearchTerm, searchQuery, user]);
 
-  // 5. Send Connection Request via Connect ID
+  // 5. Send Connection Request via Connect ID (Instagram Follow / Connect)
   const handleSendConnectRequest = async (targetConnectId: string) => {
     if (!user) return;
     const cleanId = targetConnectId.trim().replace(/^@/, '');
-    removeDeletedConnection([cleanId]);
+
+    // Instant optimistic update on search results
+    setSearchResults((prev) =>
+      prev.map((u) =>
+        u.connect_id.toLowerCase() === cleanId.toLowerCase()
+          ? { ...u, connection_status: 'pending', is_sender: true }
+          : u
+      )
+    );
+
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/connections/request`, {
         method: 'POST',
@@ -704,10 +690,6 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         onShowToast(data.message || `Request sent to @${cleanId}! 🎉`);
-        // Update local search status
-        setSearchResults((prev) =>
-          prev.map((u) => (u.connect_id.toLowerCase() === cleanId.toLowerCase() ? { ...u, connection_status: 'pending', is_sender: true } : u))
-        );
         fetchConnections();
       } else {
         onShowToast(data.detail || data.message || 'Failed to send request');
@@ -717,10 +699,28 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }
   };
 
-  // 6. Accept Connection Request
+  // 6. Accept Connection Request (Instagram Instant Confirm & Direct Chat Open)
   const handleAcceptRequest = async (connectionId: string, friendName: string) => {
     if (!user) return;
-    setPendingIncoming(prev => prev.filter(r => r.connection_id !== connectionId));
+    const reqItem = pendingIncoming.find((r) => r.connection_id === connectionId);
+    setPendingIncoming((prev) => prev.filter((r) => r.connection_id !== connectionId));
+
+    if (reqItem) {
+      const ids = [user.id, reqItem.user_id].sort();
+      const newFriend: ConnectionUser = {
+        connection_id: connectionId,
+        user_id: reqItem.user_id,
+        name: reqItem.name,
+        connect_id: reqItem.connect_id,
+        bio: reqItem.bio || '',
+        status: 'online',
+        avatar: reqItem.avatar || '',
+        conversation_id: `direct_${ids[0]}_${ids[1]}`,
+      };
+      setFriends((prev) => [newFriend, ...prev.filter((f) => f.user_id !== reqItem.user_id)]);
+      setActiveFriend(newFriend);
+    }
+
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/connections/accept`, {
         method: 'POST',
@@ -731,8 +731,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         }),
       });
       if (res.ok) {
-        onShowToast(`Connected with ${friendName}! You can now message each other. 🎉`);
-        await fetchConnections();
+        onShowToast(`Connected with ${friendName}! 🎉`);
+        fetchConnections();
         setChatFilter('all');
       }
     } catch {
@@ -743,16 +743,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   // 6b. Decline Connection Request
   const handleDeclineRequest = async (connectionId: string, name?: string) => {
     if (!user) return;
-    setPendingIncoming(prev => prev.filter(r => r.connection_id !== connectionId));
+    setPendingIncoming((prev) => prev.filter((r) => r.connection_id !== connectionId));
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/connections/decline`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ connection_id: connectionId }),
+        body: JSON.stringify({
+          connection_id: connectionId,
+          user_id: user.id,
+        }),
       });
       if (res.ok) {
-        onShowToast(`Request from ${name || 'user'} declined.`);
-        await fetchConnections();
+        onShowToast(`Request declined.`);
+        fetchConnections();
       }
     } catch {
       onShowToast('Failed to decline request');
@@ -1236,10 +1239,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     hasRecentlyDeletedRef.current = true;
     activeFriendRef.current = null;
 
-    // 1. Permanently store in deleted connections set so it NEVER reappears
-    addDeletedConnection([targetId, friendUserId, friendConnectId]);
-
-    // 2. Clear state immediately
+    // Clear state immediately
     setFriends(prev => prev.filter(f => f.connection_id !== targetId && f.user_id !== friendUserId));
     setMessages([]);
     setActiveFriend(null);
@@ -1441,33 +1441,33 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       {pendingIncoming.map((req) => (
                         <div
                           key={req.connection_id}
-                          className="p-3 rounded-xl bg-slate-50/80 border border-slate-200/80 hover:bg-slate-50 transition-colors"
+                          className="p-3 rounded-2xl bg-slate-50/90 border border-slate-200/80 hover:bg-slate-50 transition-colors shadow-xs"
                         >
-                          <div className="flex items-start justify-between gap-2.5 mb-2.5">
+                          <div className="flex items-center justify-between gap-2.5 mb-2.5">
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-sky-500 flex items-center justify-center font-bold text-xs text-white shrink-0 shadow-xs">
+                              <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-sky-500 flex items-center justify-center font-bold text-xs text-white shrink-0 shadow-xs ring-2 ring-white">
                                 {req.name ? req.name.slice(0, 2).toUpperCase() : 'U'}
                               </div>
                               <div className="min-w-0">
-                                <b className="text-xs font-bold text-slate-900 truncate block">{req.name}</b>
-                                <span className="text-[11px] font-semibold text-blue-600 block">@{req.connect_id}</span>
+                                <b className="text-xs font-bold text-slate-900 truncate block">@{req.connect_id}</b>
+                                <span className="text-[11px] text-slate-500 block truncate">{req.name}</span>
                                 {req.bio && <span className="text-[10px] text-slate-400 truncate block mt-0.5">{req.bio}</span>}
                               </div>
                             </div>
                             <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 uppercase shrink-0">
-                              New Request
+                              Request
                             </span>
                           </div>
 
-                          <div className="flex items-center justify-end gap-2 pt-1.5 border-t border-slate-200/60">
+                          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200/60">
                             <button
                               type="button"
                               onClick={async () => {
                                 await handleDeclineRequest(req.connection_id, req.name);
                               }}
-                              className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 font-semibold text-xs transition-colors cursor-pointer"
+                              className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold text-xs transition-colors cursor-pointer"
                             >
-                              Decline
+                              Delete
                             </button>
                             <button
                               type="button"
@@ -1478,7 +1478,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                               className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-xs shadow-blue-500/20 transition-all hover:scale-105 active:scale-95 cursor-pointer flex items-center gap-1.5"
                             >
                               <UserCheck className="w-3.5 h-3.5" />
-                              <span>Accept</span>
+                              <span>Confirm</span>
                             </button>
                           </div>
                         </div>
@@ -1736,12 +1736,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               pendingIncoming.map((req) => (
                 <div key={req.connection_id} className="p-3 bg-white rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center font-bold text-sm text-white shrink-0 shadow-xs">
+                    <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-sky-500 flex items-center justify-center font-bold text-sm text-white shrink-0 shadow-xs ring-2 ring-white">
                       {req.name ? req.name.slice(0, 2).toUpperCase() : 'U'}
                     </div>
                     <div className="min-w-0">
-                      <b className="text-xs font-bold text-slate-900 block truncate">{req.name}</b>
-                      <span className="text-[11px] text-blue-600 font-medium block truncate">@{req.connect_id}</span>
+                      <b className="text-xs font-bold text-slate-900 block truncate">@{req.connect_id}</b>
+                      <span className="text-[11px] text-slate-500 font-medium block truncate">{req.name}</span>
                       <span className="text-[10px] text-slate-400">Wants to connect with you</span>
                     </div>
                   </div>
@@ -1749,16 +1749,16 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     <button
                       type="button"
                       onClick={() => handleAcceptRequest(req.connection_id, req.name)}
-                      className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer"
+                      className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer"
                     >
-                      Accept
+                      Confirm
                     </button>
                     <button
                       type="button"
                       onClick={() => handleDeclineRequest(req.connection_id, req.name)}
-                      className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 text-xs font-medium transition-colors cursor-pointer"
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-medium transition-colors cursor-pointer"
                     >
-                      Decline
+                      Delete
                     </button>
                   </div>
                 </div>
@@ -1824,13 +1824,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
 
               {searchResults.length > 0 ? (
                 searchResults.map((u) => {
-                  const deletedSet = getDeletedConnections();
-                  const isDeleted = deletedSet.has(String(u.id).toLowerCase()) ||
-                                    deletedSet.has(String(u.connect_id).toLowerCase()) ||
-                                    (u.connection_id ? deletedSet.has(String(u.connection_id).toLowerCase()) : false);
-                  const alreadyFriend = !isDeleted && friends.find((f) => f.user_id === u.id || f.connect_id.toLowerCase() === u.connect_id.toLowerCase());
-                  const isAccepted = !isDeleted && (alreadyFriend || u.connection_status === 'accepted');
-                  const isPending = !isDeleted && u.connection_status === 'pending';
+                  const alreadyFriend = friends.find((f) => f.user_id === u.id || f.connect_id.toLowerCase() === u.connect_id.toLowerCase());
+                  const isAccepted = Boolean(alreadyFriend || u.connection_status === 'accepted');
+                  const isPending = !isAccepted && u.connection_status === 'pending';
                   const isSender = u.is_sender;
 
                   return (
@@ -1839,19 +1835,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       className="px-3.5 py-3 flex items-center justify-between gap-3 hover:bg-slate-50 transition-colors border-b border-slate-100"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-sky-500 flex items-center justify-center font-bold text-sm text-white shrink-0 shadow-xs">
-                          {u.name.slice(0, 2).toUpperCase()}
+                        <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-sky-500 flex items-center justify-center font-bold text-sm text-white shrink-0 shadow-xs ring-2 ring-white">
+                          {u.name ? u.name.slice(0, 2).toUpperCase() : 'U'}
                         </div>
                         <div className="min-w-0">
-                          <b className="text-sm font-bold text-slate-900 truncate block">{u.name}</b>
-                          <div className="flex items-center gap-1.5 text-xs">
-                            <span className="font-semibold text-blue-600">@{u.connect_id}</span>
+                          <span className="text-sm font-bold text-slate-900 truncate block">@{u.connect_id}</span>
+                          <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                            <span className="truncate">{u.name}</span>
                             {u.bio && <span className="text-slate-400 truncate max-w-[130px]">· {u.bio}</span>}
                           </div>
                         </div>
                       </div>
 
-                      {/* Action buttons */}
+                      {/* Action buttons (Instagram Style) */}
                       <div className="shrink-0">
                         {isAccepted ? (
                           <button
@@ -1859,37 +1855,49 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                             onClick={() => {
                               if (alreadyFriend) {
                                 setActiveFriend(alreadyFriend);
-                                setFriendSearchTerm('');
                               } else {
-                                fetchConnections();
+                                const newF: ConnectionUser = {
+                                  connection_id: u.connection_id || `conn_${[user?.id, u.id].sort().join('_')}`,
+                                  user_id: u.id,
+                                  name: u.name,
+                                  connect_id: u.connect_id,
+                                  bio: u.bio || '',
+                                  status: 'online',
+                                  avatar: u.avatar || '',
+                                  conversation_id: `direct_${[user?.id, u.id].sort().join('_')}`,
+                                };
+                                setFriends((prev) => [newF, ...prev]);
+                                setActiveFriend(newF);
                               }
+                              setFriendSearchTerm('');
+                              setSearchQuery('');
                             }}
-                            className="px-3 py-1.5 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                            className="px-3.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-600 text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
                           >
                             <MessageSquare className="w-3.5 h-3.5" />
                             <span>Message</span>
                           </button>
                         ) : isPending ? (
                           isSender ? (
-                            <span className="px-2.5 py-1 rounded-xl bg-amber-50 text-amber-700 text-xs font-semibold border border-amber-200/80 inline-flex items-center gap-1">
-                              <Clock className="w-3 h-3 text-amber-600" />
+                            <span className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold inline-flex items-center gap-1.5 border border-slate-200">
+                              <Clock className="w-3.5 h-3.5 text-slate-500" />
                               <span>Requested</span>
                             </span>
                           ) : (
-                            <div className="flex items-center gap-1">
+                            <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
                                 onClick={() => u.connection_id && handleAcceptRequest(u.connection_id, u.name)}
-                                className="px-2.5 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
+                                className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-all cursor-pointer shadow-xs"
                               >
-                                Accept
+                                Confirm
                               </button>
                               <button
                                 type="button"
                                 onClick={() => u.connection_id && handleDeclineRequest(u.connection_id, u.name)}
-                                className="px-2 py-1 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 text-xs cursor-pointer"
+                                className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 text-xs font-medium transition-all cursor-pointer"
                               >
-                                Decline
+                                Delete
                               </button>
                             </div>
                           )
@@ -1897,17 +1905,17 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                           <button
                             type="button"
                             onClick={() => handleSendConnectRequest(u.connect_id)}
-                            className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs shadow-blue-500/20 transition-all hover:scale-105 active:scale-95 cursor-pointer flex items-center gap-1.5"
+                            className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs shadow-blue-500/20 transition-all hover:scale-105 active:scale-95 cursor-pointer flex items-center gap-1.5"
                           >
                             <UserPlus className="w-3.5 h-3.5" />
-                            <span>Add Friend</span>
+                            <span>Connect</span>
                           </button>
                         )}
                       </div>
                     </div>
                   );
                 })
-              ) : !isSearching ? (
+              ) : !isSearching && friendSearchTerm.trim().length >= 2 ? (
                 <div className="p-6 text-center">
                   <p className="text-xs text-slate-500 mb-3">
                     No registered user found for &quot;<span className="font-semibold text-slate-800">@{friendSearchTerm.trim().replace(/^@/, '')}</span>&quot;
