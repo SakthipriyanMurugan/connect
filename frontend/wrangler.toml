@@ -6,3 +6,7 @@ pages_build_output_dir = "dist"
 binding = "DB"
 database_name = "connect"
 database_id = "6926e446-a98b-4c6f-9466-f9dc6d4966a9"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "392558f50ad94fb2b45608b208d9951f"
