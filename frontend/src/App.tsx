@@ -10,6 +10,18 @@ const MainLayout = lazy(() => import('./components/layout/MainLayout').then(m =>
 const AppContent: React.FC = () => {
   const { isAuthenticated } = useAuth();
 
+  // Capture shared meeting/call room link even before user logs in
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const qRoom = params.get('room');
+    const pathMatch = window.location.pathname.match(/^\/meet\/([^/]+)/);
+    const room = qRoom || (pathMatch ? decodeURIComponent(pathMatch[1]) : null);
+    if (room) {
+      sessionStorage.setItem('vertex_pending_room', room);
+    }
+  }, []);
+
   // Defer Service Worker registration to idle time after window load
   useEffect(() => {
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {

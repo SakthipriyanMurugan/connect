@@ -75,6 +75,58 @@ class MeetingIntelligence(Base):
     sentiment_score = Column(Integer, default=94)
     sentiment_label = Column(String, default="Highly Collaborative & Constructive")
     talk_time_breakdown = Column(JSON, default=list)
+    status = Column(String, default="pending")
+    supervisor_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GroupChat(Base):
+    __tablename__ = "groups"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    name = Column(String, nullable=False)
+    connect_id = Column(String, nullable=True)
+    description = Column(String, default="")
+    created_by = Column(String, index=True, nullable=False)
+    members = Column(JSON, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    name = Column(String, nullable=False)
+    description = Column(String, default="")
+    owner_id = Column(String, index=True, nullable=False)
+    members = Column(JSON, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ScheduledMeeting(Base):
+    __tablename__ = "meetings"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    title = Column(String, nullable=False)
+    time = Column(String, default="Upcoming")
+    host_id = Column(String, index=True, nullable=True)
+    host_name = Column(String, default="You")
+    room_name = Column(String, nullable=False)
+    is_live = Column(Boolean, default=False)
+    ai_notes_enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UploadedFileRecord(Base):
+    __tablename__ = "uploaded_files"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, index=True, nullable=True)
+    file_name = Column(String, nullable=False)
+    file_size = Column(String, nullable=True)
+    file_type = Column(String, nullable=True)
+    file_url = Column(String, nullable=False)
+    shared_by = Column(String, default="You")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class CallQualityScorecard(Base):

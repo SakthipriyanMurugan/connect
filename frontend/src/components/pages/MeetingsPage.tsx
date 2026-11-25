@@ -1,16 +1,19 @@
-import React, { useState } from 'react';
-import { 
-  Video, 
-  Plus, 
-  Clock, 
-  Users, 
-  Play, 
-  Copy, 
-  Check, 
+import React, { useState, useEffect } from 'react';
+import {
+  Video,
+  Plus,
+  Clock,
+  Users,
+  Play,
+  Copy,
+  Check,
   ShieldCheck,
   Sparkles,
-  CalendarDays
+  CalendarDays,
+  Trash2
 } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import { API_BASE_URL } from '../../config/api';
 
 interface MeetingsPageProps {
   onStartCall: (title: string, roomName?: string) => void;
@@ -22,6 +25,7 @@ interface MeetingItem {
   title: string;
   time: string;
   host: string;
+  room_name?: string;
   participants: number;
   link: string;
   isLive: boolean;
@@ -29,44 +33,132 @@ interface MeetingItem {
 }
 
 export const MeetingsPage: React.FC<MeetingsPageProps> = ({ onStartCall, onShowToast }) => {
+  const { user } = useAuth();
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newTime, setNewTime] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Clean initial state (empty until user schedules)
   const [meetings, setMeetings] = useState<MeetingItem[]>([]);
 
-  const handleCopyLink = (id: string, link: string) => {
-    navigator.clipboard?.writeText(link);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/v1/meetings`);
+        if (res.ok && active) {
+          const data = await res.json();
+          if (Array.isArray(data)) {
+            setMeetings(
+              data.map((m: any) => {
+                const room = m.room_name || `room-${m.id}`;
+                return {
+                  id: m.id,
+                  title: m.title,
+                  time: m.time || 'Upcoming',
+                  host: m.host || m.host_name || 'You',
+                  room_name: room,
+                  participants: m.participants || 1,
+                  link: `${window.location.origin}/?room=${encodeURIComponent(room)}`,
+                  isLive: Boolean(m.isLive ?? m.is_live),
+                  aiNotesEnabled: Boolean(m.aiNotesEnabled ?? m.ai_notes_enabled ?? true),
+                };
+              })
+            );
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch meetings', e);
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleCopyLink = (id: string, link: string, roomName?: string) => {
+    const shareUrl = link.startsWith('http')
+      ? link
+      : `${window.location.origin}/?room=${encodeURIComponent(roomName || 'room-' + id)}`;
+    navigator.clipboard?.writeText(shareUrl).catch(() => {});
     setCopiedId(id);
     onShowToast('Meeting link copied to clipboard!');
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const handleCreateMeeting = (e: React.FormEvent) => {
+  const handleCreateMeeting = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) {
       onShowToast('Please enter a meeting title.');
       return;
     }
 
-    const newMeeting: MeetingItem = {
+    const title = newTitle.trim();
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'room';
+    const roomName = `meet-${slug}-${Date.now()}`;
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/meetings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          time: newTime.trim() || 'Upcoming',
+          host_id: user?.id || '',
+          host_name: user?.name || 'You',
+          room_name: roomName,
+        }),
+      });
+      if (res.ok) {
+        const saved = await res.json();
+        const savedRoom = saved.room_name || roomName;
+        const newMeeting: MeetingItem = {
+          id: saved.id || 'm-' + Date.now(),
+          title: saved.title || title,
+          time: saved.time || newTime || 'Upcoming',
+          host: saved.host || user?.name || 'You',
+          room_name: savedRoom,
+          participants: saved.participants || 1,
+          link: `${window.location.origin}/?room=${encodeURIComponent(savedRoom)}`,
+          isLive: Boolean(saved.isLive),
+          aiNotesEnabled: saved.aiNotesEnabled !== false,
+        };
+        setMeetings((prev) => [newMeeting, ...prev]);
+        setShowScheduleModal(false);
+        setNewTitle('');
+        setNewTime('');
+        onShowToast(`Meeting "${newMeeting.title}" scheduled!`);
+        return;
+      }
+    } catch {}
+
+    const fallbackMeeting: MeetingItem = {
       id: 'm-' + Date.now(),
-      title: newTitle.trim(),
+      title,
       time: newTime || 'Upcoming',
-      host: 'You',
+      host: user?.name || 'You',
+      room_name: roomName,
       participants: 1,
-      link: `vertex.connect/meet/${newTitle.toLowerCase().replace(/\s+/g, '-')}`,
+      link: `${window.location.origin}/?room=${encodeURIComponent(roomName)}`,
       isLive: false,
       aiNotesEnabled: true,
     };
-
-    setMeetings([newMeeting, ...meetings]);
+    setMeetings((prev) => [fallbackMeeting, ...prev]);
     setShowScheduleModal(false);
     setNewTitle('');
     setNewTime('');
-    onShowToast(`Meeting "${newMeeting.title}" scheduled successfully!`);
+    onShowToast(`Meeting "${fallbackMeeting.title}" scheduled!`);
+  };
+
+  const handleDeleteMeeting = async (id: string) => {
+    setMeetings((prev) => prev.filter((m) => m.id !== id));
+    onShowToast('Meeting deleted');
+    try {
+      await fetch(`${API_BASE_URL}/api/v1/meetings/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch {}
   };
 
   return (
@@ -104,7 +196,11 @@ export const MeetingsPage: React.FC<MeetingsPageProps> = ({ onStartCall, onShowT
       </div>
 
       {/* Meetings List or Clean Empty State */}
-      {meetings.length === 0 ? (
+      {isLoading ? (
+        <div className="glass-panel p-12 text-center text-xs text-[#6f7899] dark:text-[#aeb8dc]">
+          Loading scheduled meetings...
+        </div>
+      ) : meetings.length === 0 ? (
         <div className="glass-panel p-12 text-center flex flex-col items-center justify-center">
           <div className="w-14 h-14 rounded-2xl bg-[#718bff]/10 text-[var(--accent)] flex items-center justify-center mb-3">
             <CalendarDays className="w-7 h-7" />
@@ -185,28 +281,39 @@ export const MeetingsPage: React.FC<MeetingsPageProps> = ({ onStartCall, onShowT
                 </div>
               </div>
 
-              <div className="pt-4 border-t border-black/5 dark:border-white/10 flex items-center justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={() => handleCopyLink(m.id, m.link)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-[#40516c] dark:text-[#cbd4ff] bg-black/5 dark:bg-white/5 hover:bg-black/10 flex items-center gap-1.5 transition-all cursor-pointer"
-                >
-                  {copiedId === m.id ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-[#12a878]" />
-                      <span>Copied</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5" />
-                      <span>Invite Link</span>
-                    </>
-                  )}
-                </button>
+              <div className="pt-4 border-t border-black/5 dark:border-white/10 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleCopyLink(m.id, m.link, m.room_name)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-[#40516c] dark:text-[#cbd4ff] bg-black/5 dark:bg-white/5 hover:bg-black/10 flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    {copiedId === m.id ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-[#12a878]" />
+                        <span>Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Invite Link</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteMeeting(m.id)}
+                    title="Delete meeting"
+                    aria-label="Delete meeting"
+                    className="p-1.5 rounded-lg text-[#6f7899] hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
 
                 <button
                   type="button"
-                  onClick={() => onStartCall(m.title, 'room-' + m.id)}
+                  onClick={() => onStartCall(m.title, m.room_name || 'room-' + m.id)}
                   className="px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm bg-gradient-to-r from-[#718bff] to-[#9b83f7] text-white hover:brightness-110 shadow-[#718bff]/30"
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />

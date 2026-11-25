@@ -1,15 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { 
-  Room, 
-  RoomEvent, 
-  Track, 
-  RemoteParticipant, 
-  RemoteTrackPublication, 
+import {
+  Room,
+  RoomEvent,
+  Track,
+  RemoteParticipant,
+  RemoteTrackPublication,
   RemoteTrack,
   VideoPresets,
   AudioPresets,
   ScreenSharePresets,
-  Participant
+  ConnectionState,
 } from 'livekit-client';
 import { fetchLiveKitToken, playOutgoingRingtone, stopOutgoingRingtone } from '../../services/livekit';
 import { ActiveVoiceCall } from './ActiveVoiceCall';
@@ -31,12 +31,24 @@ export interface CallEndStats {
   participants: string[];
   title: string;
   room_name: string;
+  was_connected?: boolean;
+}
+
+export interface CallControlsHandle {
+  toggleMute: () => void;
+  toggleVideo: () => void;
+  toggleScreenShare: () => void;
+  hangup: () => void;
 }
 
 interface CallModalProps {
   session: ActiveCallSession;
   currentUser: { id: string; name: string; connect_id?: string };
+  isMinimized?: boolean;
+  controlRef?: React.MutableRefObject<CallControlsHandle | null>;
+  onSyncState?: (state: { isMuted: boolean; isVideoOn: boolean; isScreenSharing: boolean; durationSeconds: number }) => void;
   onEndCall: (stats?: CallEndStats) => void;
+  onTimeout?: () => void;
   onMinimize: () => void;
   onShowToast: (msg: string) => void;
 }
@@ -44,26 +56,39 @@ interface CallModalProps {
 export const CallModal: React.FC<CallModalProps> = ({
   session,
   currentUser,
+  isMinimized = false,
+  controlRef,
+  onSyncState,
   onEndCall,
+  onTimeout,
   onMinimize,
   onShowToast,
 }) => {
+  const isAudioOnly = session.callType === 'audio' || session.callType === 'voice';
+
   const [room, setRoom] = useState<Room | null>(null);
   const [isConnecting, setIsConnecting] = useState(true);
+  const [connectionStateLabel, setConnectionStateLabel] = useState<string>('Connecting...');
   const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOn, setIsVideoOn] = useState(session.callType !== 'audio' && session.callType !== 'voice');
+  const [isVideoOn, setIsVideoOn] = useState(!isAudioOnly);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [participantCount, setParticipantCount] = useState(1);
+  const [acceptedByCallee, setAcceptedByCallee] = useState(false);
   const [remoteName, setRemoteName] = useState<string>('');
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
   const [hasScreenShare, setHasScreenShare] = useState(false);
+  const [localVideoTrack, setLocalVideoTrack] = useState<any>(null);
   const [remoteVideoTrack, setRemoteVideoTrack] = useState<RemoteTrack | null>(null);
   const [remoteScreenTrack, setRemoteScreenTrack] = useState<RemoteTrack | null>(null);
-  const [isRinging, setIsRinging] = useState<boolean>(!session.isIncoming && !!session.targetUserId);
   const [timeoutCountdown, setTimeoutCountdown] = useState<number>(35);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [participantsList, setParticipantsList] = useState<ParticipantInfo[]>([]);
+
+  const isConnected = Boolean(
+    session.isIncoming || !session.targetUserId || participantCount >= 2 || acceptedByCallee
+  );
+  const isRinging = !isConnected;
 
   // Video & Audio Element Refs
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -71,45 +96,107 @@ export const CallModal: React.FC<CallModalProps> = ({
   const screenShareRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const timeoutRef = useRef<any>(null);
+  const isConnectedRef = useRef(isConnected);
+  isConnectedRef.current = isConnected;
 
-  // Dedicated Video Track Attacher
+  // Sync live state to minimized CallBar
   useEffect(() => {
-    if (remoteVideoTrack && remoteVideoRef.current) {
-      remoteVideoTrack.attach(remoteVideoRef.current);
+    onSyncState?.({
+      isMuted,
+      isVideoOn,
+      isScreenSharing,
+      durationSeconds: seconds,
+    });
+  }, [isMuted, isVideoOn, isScreenSharing, seconds]);
+
+  // Listen for immediate call_response accepted signal from MainLayout
+  useEffect(() => {
+    const onAccepted = (e: any) => {
+      if (!e?.detail?.room_name || e.detail.room_name === session.roomName) {
+        setAcceptedByCallee(true);
+      }
+    };
+    window.addEventListener('vertex_call_accepted', onAccepted);
+    return () => window.removeEventListener('vertex_call_accepted', onAccepted);
+  }, [session.roomName]);
+
+  // Dedicated Local Camera Track Attacher (re-runs whenever UI transitions from Ringing to ActiveVideoCall!)
+  useEffect(() => {
+    const el = localVideoRef.current;
+    if (localVideoTrack && el && !isRinging && isVideoOn) {
+      try {
+        localVideoTrack.attach(el);
+      } catch {}
       return () => {
         try {
-          if (remoteVideoRef.current) remoteVideoTrack.detach(remoteVideoRef.current);
-        } catch (e) {}
+          if (el) localVideoTrack.detach(el);
+        } catch {}
       };
     }
-  }, [remoteVideoTrack]);
+  }, [localVideoTrack, isRinging, isVideoOn, participantCount, hasScreenShare]);
+
+  // Dedicated Remote Video Track Attacher
+  useEffect(() => {
+    const el = remoteVideoRef.current;
+    if (remoteVideoTrack && el) {
+      try {
+        remoteVideoTrack.attach(el);
+      } catch {}
+      return () => {
+        try {
+          if (el) remoteVideoTrack.detach(el);
+        } catch {}
+      };
+    }
+  }, [remoteVideoTrack, isRinging, participantCount]);
 
   // Dedicated Screen Share Attacher
   useEffect(() => {
-    if (remoteScreenTrack && screenShareRef.current) {
-      remoteScreenTrack.attach(screenShareRef.current);
+    const el = screenShareRef.current;
+    if (remoteScreenTrack && el) {
+      try {
+        remoteScreenTrack.attach(el);
+      } catch {}
       return () => {
         try {
-          if (screenShareRef.current) remoteScreenTrack.detach(screenShareRef.current);
-        } catch (e) {}
+          if (el) remoteScreenTrack.detach(el);
+        } catch {}
       };
     }
-  }, [remoteScreenTrack]);
+  }, [remoteScreenTrack, hasScreenShare, isRinging]);
+
+  // Keep latest timeout handler ref
+  const onTimeoutRef = useRef(onTimeout);
+  onTimeoutRef.current = onTimeout;
+  const roomRef = useRef<Room | null>(null);
+  roomRef.current = room;
 
   // Outgoing Call Ringtone & Auto-Timeout (35 seconds)
   useEffect(() => {
-    if (!session.isIncoming && session.targetUserId && participantCount < 2) {
+    if (isRinging && !session.isIncoming && session.targetUserId) {
       playOutgoingRingtone();
-      setIsRinging(true);
+      setTimeoutCountdown(35);
 
       const countdownInterval = setInterval(() => {
         setTimeoutCountdown((prev) => {
           if (prev <= 1) {
             clearInterval(countdownInterval);
             stopOutgoingRingtone();
-            setIsRinging(false);
-            onShowToast('Teammate did not answer. Call timed out (Missed Call).');
-            handleHangup();
+            if (roomRef.current) {
+              roomRef.current.disconnect();
+            }
+            onShowToast('Teammate did not answer (Missed Call).');
+            if (onTimeoutRef.current) {
+              onTimeoutRef.current();
+            } else {
+              onEndCall({
+                duration_seconds: 0,
+                participants: [currentUser.name],
+                title: session.title,
+                room_name: session.roomName,
+                was_connected: false,
+              });
+            }
             return 0;
           }
           return prev - 1;
@@ -124,30 +211,33 @@ export const CallModal: React.FC<CallModalProps> = ({
       };
     } else {
       stopOutgoingRingtone();
-      setIsRinging(false);
+      if (timeoutRef.current) clearInterval(timeoutRef.current);
     }
-  }, [participantCount, session.targetUserId]);
+  }, [isRinging, session.isIncoming, session.targetUserId]);
 
-  // Duration Timer
+  // Duration Timer (ONLY starts once connected, not while ringing!)
   useEffect(() => {
+    if (!isConnected) return;
     const timer = setInterval(() => setSeconds((s) => s + 1), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [isConnected]);
 
-  // Sync Remote Participants List for Group View
+  // Sync Remote Participants List (uses remoteParticipants.size + 1 so 1-on-1 stays 2!)
   const syncParticipants = (activeRoom: Room) => {
     const list: ParticipantInfo[] = [];
     activeRoom.remoteParticipants.forEach((p) => {
+      const camPub = p.getTrackPublication(Track.Source.Camera);
       list.push({
         identity: p.identity,
         name: p.name || p.identity,
         isSpeaking: p.isSpeaking,
         isAudioMuted: !p.isMicrophoneEnabled,
         isVideoOff: !p.isCameraEnabled,
+        videoTrack: camPub?.isSubscribed ? camPub.track : undefined,
       });
     });
     setParticipantsList(list);
-    setParticipantCount(activeRoom.numParticipants + 1);
+    setParticipantCount(activeRoom.remoteParticipants.size + 1);
   };
 
   // Connect to LiveKit Room
@@ -177,7 +267,7 @@ export const CallModal: React.FC<CallModalProps> = ({
             sampleRate: 48000,
           },
           videoCaptureDefaults: {
-            resolution: VideoPresets.h2160.resolution,
+            resolution: VideoPresets.h1080.resolution,
             facingMode: 'user',
           },
           publishDefaults: {
@@ -185,8 +275,6 @@ export const CallModal: React.FC<CallModalProps> = ({
               VideoPresets.h540,
               VideoPresets.h720,
               VideoPresets.h1080,
-              VideoPresets.h1440,
-              VideoPresets.h2160,
             ],
             audioPreset: AudioPresets.musicHighQualityStereo,
             forceStereo: true,
@@ -197,6 +285,15 @@ export const CallModal: React.FC<CallModalProps> = ({
         });
         activeRoom = newRoom;
         setRoom(newRoom);
+
+        newRoom.on(RoomEvent.ConnectionStateChanged, (state: ConnectionState) => {
+          if (state === ConnectionState.Reconnecting) {
+            setConnectionStateLabel('Reconnecting...');
+            onShowToast('Network unstable — reconnecting call...');
+          } else if (state === ConnectionState.Connected) {
+            setConnectionStateLabel('Connected');
+          }
+        });
 
         newRoom.on(
           RoomEvent.TrackSubscribed,
@@ -235,9 +332,13 @@ export const CallModal: React.FC<CallModalProps> = ({
           }
         );
 
+        newRoom.on(RoomEvent.TrackMuted, () => syncParticipants(newRoom));
+        newRoom.on(RoomEvent.TrackUnmuted, () => syncParticipants(newRoom));
+
         newRoom.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => {
           syncParticipants(newRoom);
           setRemoteName(p.name || p.identity);
+          setAcceptedByCallee(true);
           onShowToast(`${p.name || 'Participant'} joined the call`);
         });
 
@@ -246,12 +347,13 @@ export const CallModal: React.FC<CallModalProps> = ({
           onShowToast(`${p.name || 'Participant'} left the call`);
         });
 
-        newRoom.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
+        newRoom.on(RoomEvent.ActiveSpeakersChanged, () => {
           syncParticipants(newRoom);
         });
 
         await newRoom.connect(tokenData.url, tokenData.token);
         setIsConnecting(false);
+        setConnectionStateLabel('Connected');
 
         // Scan existing tracks
         for (const p of newRoom.remoteParticipants.values()) {
@@ -290,16 +392,17 @@ export const CallModal: React.FC<CallModalProps> = ({
           console.warn('Microphone permission:', e);
         }
 
-        // Enable camera if video call
-        if (session.callType !== 'audio') {
+        // Enable camera ONLY if video / group call
+        if (!isAudioOnly) {
           try {
             await newRoom.localParticipant.setCameraEnabled(true, {
-              resolution: VideoPresets.h2160.resolution,
+              resolution: VideoPresets.h1080.resolution,
             });
             setIsVideoOn(true);
             const camTrack = newRoom.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
-            if (camTrack && localVideoRef.current) {
-              camTrack.attach(localVideoRef.current);
+            if (camTrack) {
+              setLocalVideoTrack(camTrack);
+              if (localVideoRef.current) camTrack.attach(localVideoRef.current);
             }
           } catch (e) {
             console.warn('Camera permission:', e);
@@ -336,7 +439,7 @@ export const CallModal: React.FC<CallModalProps> = ({
         sampleRate: 48000,
       });
       setIsMuted(nextMuted);
-      onShowToast(nextMuted ? 'Microphone muted' : 'Microphone unmuted (Opus 48kHz HD)');
+      onShowToast(nextMuted ? 'Microphone muted' : 'Microphone unmuted');
     } catch (e: any) {
       onShowToast(`Failed to toggle mic: ${e.message}`);
     }
@@ -348,14 +451,20 @@ export const CallModal: React.FC<CallModalProps> = ({
     try {
       const nextVideo = !isVideoOn;
       await room.localParticipant.setCameraEnabled(nextVideo, {
-        resolution: VideoPresets.h2160.resolution,
+        resolution: VideoPresets.h1080.resolution,
+        facingMode,
       });
       setIsVideoOn(nextVideo);
       if (nextVideo) {
         const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
-        if (camTrack && localVideoRef.current) camTrack.attach(localVideoRef.current);
+        if (camTrack) {
+          setLocalVideoTrack(camTrack);
+          if (localVideoRef.current) camTrack.attach(localVideoRef.current);
+        }
+      } else {
+        setLocalVideoTrack(null);
       }
-      onShowToast(nextVideo ? 'Camera turned on (4K UHD / 2K)' : 'Camera turned off');
+      onShowToast(nextVideo ? 'Camera turned on' : 'Camera turned off');
     } catch (e: any) {
       onShowToast(`Failed to toggle camera: ${e.message}`);
     }
@@ -373,7 +482,10 @@ export const CallModal: React.FC<CallModalProps> = ({
         resolution: VideoPresets.h1080.resolution,
       });
       const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
-      if (camTrack && localVideoRef.current) camTrack.attach(localVideoRef.current);
+      if (camTrack) {
+        setLocalVideoTrack(camTrack);
+        if (localVideoRef.current) camTrack.attach(localVideoRef.current);
+      }
       onShowToast(`Switched to ${nextFacing === 'user' ? 'Front' : 'Rear'} camera`);
     } catch (e: any) {
       console.warn('Switch camera warning:', e);
@@ -388,7 +500,7 @@ export const CallModal: React.FC<CallModalProps> = ({
       await room.localParticipant.setScreenShareEnabled(nextShare);
       setIsScreenSharing(nextShare);
       onShowToast(nextShare ? 'Screen sharing started' : 'Screen sharing stopped');
-    } catch (e: any) {
+    } catch {
       setIsScreenSharing(false);
       onShowToast('Screen share cancelled');
     }
@@ -408,9 +520,9 @@ export const CallModal: React.FC<CallModalProps> = ({
 
   // Copy Conference Link
   const handleCopyInviteLink = () => {
-    const link = `${window.location.origin}/?room=${session.roomName}`;
+    const link = `${window.location.origin}/?room=${encodeURIComponent(session.roomName)}`;
     navigator.clipboard.writeText(link);
-    onShowToast('Conference room link copied! Send to teammates to join.');
+    onShowToast('Invite link copied! Share with teammates to join this call.');
   };
 
   // Hangup Call
@@ -423,90 +535,114 @@ export const CallModal: React.FC<CallModalProps> = ({
     const pNames = [currentUser.name];
     if (remoteName && !pNames.includes(remoteName)) pNames.push(remoteName);
     onEndCall({
-      duration_seconds: seconds,
+      duration_seconds: isConnectedRef.current ? seconds : 0,
       participants: pNames,
       title: session.title,
       room_name: session.roomName,
+      was_connected: isConnectedRef.current,
     });
   };
 
+  // Expose live track controls to minimized CallBar
+  useEffect(() => {
+    if (controlRef) {
+      controlRef.current = {
+        toggleMute: handleToggleMute,
+        toggleVideo: handleToggleVideo,
+        toggleScreenShare: handleToggleScreenShare,
+        hangup: handleHangup,
+      };
+    }
+  });
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-6 bg-black/85 backdrop-blur-2xl animate-in fade-in duration-200">
-      {/* Hidden Audio Element for remote sound */}
+    <>
+      {/* Hidden Audio Element ALWAYS stays mounted even when minimized so voice never cuts out */}
       <audio ref={remoteAudioRef} autoPlay />
 
-      <div className="relative w-full max-w-5xl h-full sm:h-[88vh] sm:max-h-[850px] rounded-none sm:rounded-3xl bg-[#070a1e] border-0 sm:border border-white/20 text-white shadow-2xl flex flex-col overflow-hidden backdrop-blur-3xl">
-        {isRinging ? (
-          // 1. WhatsApp-Style Outgoing Calling Screen
-          <OutgoingCallScreen
-            targetName={session.title}
-            targetConnectId={session.targetConnectId}
-            callType={session.callType}
-            timeoutCountdown={timeoutCountdown}
-            isMuted={isMuted}
-            isVideoOn={isVideoOn}
-            onToggleMute={handleToggleMute}
-            onToggleVideo={handleToggleVideo}
-            onCancelCall={handleHangup}
-          />
-        ) : (session.callType === 'audio' || session.callType === 'voice') ? (
-          // 2. WhatsApp-Style Active Voice Call Screen (with animated waveform)
-          <ActiveVoiceCall
-            partnerName={remoteName || session.title}
-            partnerConnectId={session.targetConnectId}
-            durationSeconds={seconds}
-            isMuted={isMuted}
-            onToggleMute={handleToggleMute}
-            onSelectSpeaker={handleSelectSpeaker}
-            onHangup={handleHangup}
-            onInviteTeammate={handleCopyInviteLink}
-          />
-        ) : participantCount > 2 || session.callType === 'group' ? (
-          // 3. Multi-User Responsive Group Call Screen
-          <GroupCall
-            roomTitle={session.title}
-            roomName={session.roomName}
-            durationSeconds={seconds}
-            participants={participantsList}
-            currentUserName={currentUser.name}
-            isMuted={isMuted}
-            isVideoOn={isVideoOn}
-            isScreenSharing={isScreenSharing}
-            hasScreenShare={hasScreenShare}
-            screenShareRef={screenShareRef}
-            onToggleMute={handleToggleMute}
-            onToggleVideo={handleToggleVideo}
-            onToggleScreenShare={handleToggleScreenShare}
-            onSwitchCamera={handleSwitchCamera}
-            onSelectSpeaker={handleSelectSpeaker}
-            onHangup={handleHangup}
-            onCopyInviteLink={handleCopyInviteLink}
-          />
-        ) : (
-          // 4. WhatsApp-Style Active Video Call Screen (Full-screen remote + floating local PIP + controls)
-          <ActiveVideoCall
-            partnerName={remoteName || session.title}
-            partnerConnectId={session.targetConnectId}
-            durationSeconds={seconds}
-            isMuted={isMuted}
-            isVideoOn={isVideoOn}
-            isScreenSharing={isScreenSharing}
-            hasRemoteVideo={hasRemoteVideo}
-            hasScreenShare={hasScreenShare}
-            remoteVideoRef={remoteVideoRef}
-            localVideoRef={localVideoRef}
-            screenShareRef={screenShareRef}
-            onToggleMute={handleToggleMute}
-            onToggleVideo={handleToggleVideo}
-            onToggleScreenShare={handleToggleScreenShare}
-            onSwitchCamera={handleSwitchCamera}
-            onSelectSpeaker={handleSelectSpeaker}
-            onMinimize={onMinimize}
-            onHangup={handleHangup}
-            onInviteTeammate={handleCopyInviteLink}
-          />
-        )}
+      <div
+        className={
+          isMinimized
+            ? 'hidden pointer-events-none'
+            : 'fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-6 bg-black/85 backdrop-blur-2xl animate-in fade-in duration-200'
+        }
+      >
+        <div className="relative w-full max-w-5xl h-full sm:h-[88vh] sm:max-h-[850px] rounded-none sm:rounded-3xl bg-[#070a1e] border-0 sm:border border-white/20 text-white shadow-2xl flex flex-col overflow-hidden backdrop-blur-3xl">
+          {isConnecting && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 px-3 py-1 rounded-full bg-black/70 border border-white/15 text-[11px] font-semibold text-blue-300">
+              {connectionStateLabel}
+            </div>
+          )}
+
+          {isRinging ? (
+            <OutgoingCallScreen
+              targetName={session.title}
+              targetConnectId={session.targetConnectId}
+              callType={session.callType}
+              timeoutCountdown={timeoutCountdown}
+              isMuted={isMuted}
+              isVideoOn={isVideoOn}
+              onToggleMute={handleToggleMute}
+              onToggleVideo={handleToggleVideo}
+              onCancelCall={handleHangup}
+            />
+          ) : isAudioOnly ? (
+            <ActiveVoiceCall
+              partnerName={remoteName || session.title}
+              partnerConnectId={session.targetConnectId}
+              durationSeconds={seconds}
+              isMuted={isMuted}
+              onToggleMute={handleToggleMute}
+              onSelectSpeaker={handleSelectSpeaker}
+              onHangup={handleHangup}
+              onInviteTeammate={handleCopyInviteLink}
+            />
+          ) : participantCount > 2 || session.callType === 'group' ? (
+            <GroupCall
+              roomTitle={session.title}
+              roomName={session.roomName}
+              durationSeconds={seconds}
+              participants={participantsList}
+              currentUserName={currentUser.name}
+              localVideoTrack={localVideoTrack}
+              isMuted={isMuted}
+              isVideoOn={isVideoOn}
+              isScreenSharing={isScreenSharing}
+              hasScreenShare={hasScreenShare}
+              screenShareRef={screenShareRef}
+              onToggleMute={handleToggleMute}
+              onToggleVideo={handleToggleVideo}
+              onToggleScreenShare={handleToggleScreenShare}
+              onSwitchCamera={handleSwitchCamera}
+              onSelectSpeaker={handleSelectSpeaker}
+              onHangup={handleHangup}
+              onCopyInviteLink={handleCopyInviteLink}
+            />
+          ) : (
+            <ActiveVideoCall
+              partnerName={remoteName || session.title}
+              partnerConnectId={session.targetConnectId}
+              durationSeconds={seconds}
+              isMuted={isMuted}
+              isVideoOn={isVideoOn}
+              isScreenSharing={isScreenSharing}
+              hasRemoteVideo={hasRemoteVideo}
+              hasScreenShare={hasScreenShare}
+              remoteVideoRef={remoteVideoRef}
+              localVideoRef={localVideoRef}
+              screenShareRef={screenShareRef}
+              onToggleMute={handleToggleMute}
+              onToggleVideo={handleToggleVideo}
+              onToggleScreenShare={handleToggleScreenShare}
+              onSwitchCamera={handleSwitchCamera}
+              onSelectSpeaker={handleSelectSpeaker}
+              onMinimize={onMinimize}
+              onHangup={handleHangup}
+              onInviteTeammate={handleCopyInviteLink}
+            />
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 };

@@ -5,6 +5,8 @@ import {
   Users, 
   Phone, 
   Sparkles, 
+  FolderOpen,
+  BarChart3,
   Settings, 
   User
 } from 'lucide-react';
@@ -24,7 +26,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, unr
     { id: 'messages' as NavPage, label: 'Chats', icon: MessageSquare, badge: unreadCount },
     { id: 'meetings' as NavPage, label: 'Calls', icon: Phone },
     { id: 'teams' as NavPage, label: 'Teams & Groups', icon: Users },
+    { id: 'files' as NavPage, label: 'Files', icon: FolderOpen },
     { id: 'intelligence' as NavPage, label: 'Vertex AI', icon: Sparkles, isAi: true },
+    { id: 'analytics' as NavPage, label: 'Analytics', icon: BarChart3 },
   ];
 
   return (

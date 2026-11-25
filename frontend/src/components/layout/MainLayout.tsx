@@ -5,13 +5,14 @@ import { Sidebar, MobileBottomNav, NavPage } from './Sidebar';
 import { Topbar } from './Topbar';
 import { CustomizerDrawer } from './CustomizerDrawer';
 import { CallBar } from '../calling/CallBar';
-import type { ActiveCallSession, CallEndStats } from '../calling/CallModal';
+import type { ActiveCallSession, CallEndStats, CallControlsHandle } from '../calling/CallModal';
 import { IncomingCallModal, IncomingCallData } from '../calling/IncomingCallModal';
 import type { MeetingIntelligenceReport } from '../../types';
 import { API_BASE_URL, WS_BASE_URL } from '../../config/api';
 import { stopOutgoingRingtone, stopRingtone } from '../../services/livekit';
+import { callService } from '../../services/calling/callService';
 
-// Code-split pages for sub-second initial load & 100 Performance on Lighthouse
+// Code-split pages for sub-second initial load
 const MessagesPage = lazy(() => import('../pages/MessagesPage').then(m => ({ default: m.MessagesPage })));
 const MeetingsPage = lazy(() => import('../pages/MeetingsPage').then(m => ({ default: m.MeetingsPage })));
 const IntelligencePage = lazy(() => import('../pages/IntelligencePage').then(m => ({ default: m.IntelligencePage })));
@@ -37,6 +38,7 @@ export const MainLayout: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<NavPage>('messages');
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
 
   // Active Calling & LiveKit Session State
   const [activeCallSession, setActiveCallSession] = useState<ActiveCallSession | null>(null);
@@ -50,8 +52,21 @@ export const MainLayout: React.FC = () => {
     connectId?: string;
   }>({ isOpen: false, name: '' });
 
+  // Synced CallBar state + live control ref
+  const callControlRef = useRef<CallControlsHandle | null>(null);
+  const [callBarState, setCallBarState] = useState({
+    isMuted: false,
+    isVideoOn: true,
+    isScreenSharing: false,
+    durationSeconds: 0,
+  });
+
   // Global WebSocket for Call Signaling
   const wsRef = useRef<WebSocket | null>(null);
+  const activeCallRef = useRef<ActiveCallSession | null>(null);
+  activeCallRef.current = activeCallSession;
+  const incomingCallRef = useRef<IncomingCallData | null>(null);
+  incomingCallRef.current = incomingCall;
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -60,7 +75,112 @@ export const MainLayout: React.FC = () => {
     }, 3000);
   };
 
-  // Connect global WebSocket for call invites & signaling (when WS server is active)
+  // Deep-link meeting / call room auto-join (/?room=... or /meet/...)
+  useEffect(() => {
+    if (!user?.id || typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const qRoom = params.get('room');
+    const pathMatch = window.location.pathname.match(/^\/meet\/([^/]+)/);
+    const pendingRoom = sessionStorage.getItem('vertex_pending_room');
+    const targetRoom = qRoom || (pathMatch ? decodeURIComponent(pathMatch[1]) : null) || pendingRoom;
+
+    if (targetRoom) {
+      sessionStorage.removeItem('vertex_pending_room');
+      try {
+        window.history.replaceState({}, '', '/');
+      } catch {}
+      setActiveCallSession({
+        roomName: targetRoom,
+        title: `Invited Room (${targetRoom.slice(0, 14)})`,
+        callType: 'video',
+      });
+      setIsCallMinimized(false);
+      showToast(`Joining shared room: ${targetRoom}`);
+    }
+  }, [user?.id]);
+
+  // Unified signaling dispatcher (handles both WebSocket and Serverless Edge KV Signals)
+  const processIncomingSignal = (data: any) => {
+    if (!data || !data.type) return;
+
+    if (data.type === 'incoming_call') {
+      // If already in an active call or already ringing same room, ignore duplicate or notify busy
+      if (activeCallRef.current) {
+        return;
+      }
+      if (incomingCallRef.current?.room_name === data.room_name) {
+        return;
+      }
+      setIncomingCall({
+        caller_id: data.caller_id,
+        caller_name: data.caller_name || 'Teammate',
+        caller_connect_id: data.caller_connect_id,
+        caller_avatar: data.caller_avatar,
+        room_name: data.room_name,
+        call_type: data.call_type || 'video',
+      });
+
+      if ('Notification' in window && Notification.permission === 'granted') {
+        try {
+          new Notification(`VERTEX CONNECT: Incoming ${data.call_type === 'audio' || data.call_type === 'voice' ? 'voice' : 'video'} call`, {
+            body: `Incoming call from ${data.caller_name || 'Teammate'}${data.caller_connect_id ? ` (@${data.caller_connect_id})` : ''}`,
+            icon: '/favicon.svg',
+          });
+        } catch {}
+      }
+    } else if (data.type === 'call_response') {
+      if (!data.accepted) {
+        stopOutgoingRingtone();
+        showToast('Call was declined.');
+        setActiveCallSession(null);
+        setIsCallMinimized(false);
+      } else {
+        stopOutgoingRingtone();
+        showToast('Call accepted! Connected.');
+        window.dispatchEvent(new CustomEvent('vertex_call_accepted', { detail: data }));
+      }
+    } else if (data.type === 'call_failed') {
+      stopOutgoingRingtone();
+      stopRingtone();
+      setActiveCallSession(null);
+      setIsCallMinimized(false);
+      if (data.reason === 'offline') {
+        setOfflineCallModal({
+          isOpen: true,
+          name: data.caller_name || 'Teammate',
+          connectId: data.target_connect_id || '',
+        });
+      } else {
+        showToast(data.message || 'Call failed');
+      }
+    } else if (data.type === 'call_timeout' || data.type === 'call:timeout' || data.type === 'call:missed') {
+      stopOutgoingRingtone();
+      stopRingtone();
+      setIncomingCall(null);
+      setActiveCallSession(null);
+      setIsCallMinimized(false);
+      showToast('Missed call (no answer)');
+    } else if (data.type === 'call_ended' || data.type === 'call:end' || data.type === 'call:cancel') {
+      stopOutgoingRingtone();
+      stopRingtone();
+      setIncomingCall(null);
+      setActiveCallSession(null);
+      setIsCallMinimized(false);
+      showToast('Call ended.');
+    } else if (data.type === 'call_busy' || data.type === 'call:busy') {
+      stopOutgoingRingtone();
+      stopRingtone();
+      setActiveCallSession(null);
+      setIsCallMinimized(false);
+      showToast(`${data.caller_name || 'Teammate'} is busy on another call.`);
+    } else if (data.type === 'connection_request' || data.type === 'connection_accepted') {
+      window.dispatchEvent(new CustomEvent('vertex_connection_signal', { detail: data }));
+    } else if (data.type === 'device_limit_exceeded') {
+      showToast('⚠️ Maximum active devices reached. Please disconnect another session.');
+    }
+  };
+
+  // 1. Connect global WebSocket for local/dedicated backend signaling
   useEffect(() => {
     if (!user?.id || !WS_BASE_URL) return;
 
@@ -79,74 +199,7 @@ export const MainLayout: React.FC = () => {
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-
-            if (data.type === 'incoming_call') {
-              console.log('[Signaling WS] Incoming call event received:', data);
-              setIncomingCall({
-                caller_id: data.caller_id,
-                caller_name: data.caller_name || 'Teammate',
-                caller_connect_id: data.caller_connect_id,
-                caller_avatar: data.caller_avatar,
-                room_name: data.room_name,
-                call_type: data.call_type || 'video',
-              });
-
-              // Trigger Native Web Push / Desktop Notification if in background
-              if ('Notification' in window && Notification.permission === 'granted') {
-                try {
-                  new Notification(`VERTEX CONNECT: Incoming ${data.call_type || 'video'} call`, {
-                    body: `Incoming call from ${data.caller_name || 'Teammate'} (@${data.caller_connect_id})`,
-                    icon: '/favicon.ico',
-                  });
-                } catch (e) {
-                  console.warn('Native notification notice:', e);
-                }
-              }
-            } else if (data.type === 'call_response') {
-              if (!data.accepted) {
-                stopOutgoingRingtone();
-                showToast('Call was declined by teammate.');
-                setActiveCallSession(null);
-              } else {
-                stopOutgoingRingtone();
-                showToast('Call accepted! Connecting LiveKit WebRTC stream…');
-              }
-            } else if (data.type === 'call_failed') {
-              stopOutgoingRingtone();
-              stopRingtone();
-              setActiveCallSession(null);
-              setIsCallMinimized(false);
-              if (data.reason === 'offline') {
-                setOfflineCallModal({
-                  isOpen: true,
-                  name: data.caller_name || 'Teammate',
-                  connectId: data.target_connect_id || '',
-                });
-              } else {
-                showToast(data.message || 'Call failed');
-              }
-            } else if (data.type === 'call_timeout' || data.type === 'call:timeout' || data.type === 'call:missed') {
-              stopOutgoingRingtone();
-              stopRingtone();
-              setIncomingCall(null);
-              setActiveCallSession(null);
-              setIsCallMinimized(false);
-              showToast('Call timed out (Missed Call)');
-            } else if (data.type === 'call_ended' || data.type === 'call:end' || data.type === 'call:cancel') {
-              stopOutgoingRingtone();
-              stopRingtone();
-              showToast('Call ended by participant.');
-              setActiveCallSession(null);
-              setIsCallMinimized(false);
-            } else if (data.type === 'call_busy' || data.type === 'call:busy') {
-              stopOutgoingRingtone();
-              stopRingtone();
-              setActiveCallSession(null);
-              setIsCallMinimized(false);
-              showToast(`${data.caller_name || 'Teammate'} is busy on another call.`);
-            } else if (data.type === 'device_limit_exceeded') {
-              showToast('⚠️ Maximum 3 devices active for your account. Please disconnect another device.');
-            }
+            processIncomingSignal(data);
           } catch (e) {
             console.warn('WS call signaling parse error:', e);
           }
@@ -156,7 +209,7 @@ export const MainLayout: React.FC = () => {
         ws.onclose = (event: CloseEvent) => {
           wsRef.current = null;
           if (event.code === 4003) {
-            showToast('⚠️ Device Limit Reached: Maximum 3 devices allowed simultaneously.');
+            showToast('⚠️ Device Limit Reached.');
             return;
           }
           reconnectTimeout = setTimeout(connectWS, 3000);
@@ -168,62 +221,8 @@ export const MainLayout: React.FC = () => {
 
     connectWS();
 
-    // Listen to fallback signaling events from window
     const handleSignalingEvent = (e: any) => {
-      const data = e.detail;
-      if (!data) return;
-      if (data.type === 'incoming_call') {
-        setIncomingCall({
-          caller_id: data.caller_id,
-          caller_name: data.caller_name || 'Teammate',
-          caller_connect_id: data.caller_connect_id,
-          caller_avatar: data.caller_avatar,
-          room_name: data.room_name,
-          call_type: data.call_type || 'video',
-        });
-      } else if (data.type === 'call_response') {
-        if (!data.accepted) {
-          stopOutgoingRingtone();
-          showToast('Call was declined by teammate.');
-          setActiveCallSession(null);
-        } else {
-          stopOutgoingRingtone();
-          showToast('Call accepted! Connecting LiveKit WebRTC stream…');
-        }
-      } else if (data.type === 'call_failed') {
-        stopOutgoingRingtone();
-        stopRingtone();
-        setActiveCallSession(null);
-        setIsCallMinimized(false);
-        if (data.reason === 'offline') {
-          setOfflineCallModal({
-            isOpen: true,
-            name: data.caller_name || 'Teammate',
-            connectId: data.target_connect_id || '',
-          });
-        } else {
-          showToast(data.message || 'Call failed');
-        }
-      } else if (data.type === 'call_timeout' || data.type === 'call:timeout' || data.type === 'call:missed') {
-        stopOutgoingRingtone();
-        stopRingtone();
-        setIncomingCall(null);
-        setActiveCallSession(null);
-        setIsCallMinimized(false);
-        showToast('Call timed out (Missed Call)');
-      } else if (data.type === 'call_ended' || data.type === 'call:end' || data.type === 'call:cancel') {
-        stopOutgoingRingtone();
-        stopRingtone();
-        showToast('Call ended by participant.');
-        setActiveCallSession(null);
-        setIsCallMinimized(false);
-      } else if (data.type === 'call_busy' || data.type === 'call:busy') {
-        stopOutgoingRingtone();
-        stopRingtone();
-        setActiveCallSession(null);
-        setIsCallMinimized(false);
-        showToast(`${data.caller_name || 'Teammate'} is busy on another call.`);
-      }
+      if (e?.detail) processIncomingSignal(e.detail);
     };
 
     window.addEventListener('vertex_call_signaling', handleSignalingEvent);
@@ -240,10 +239,32 @@ export const MainLayout: React.FC = () => {
     };
   }, [user?.id]);
 
-  // Start outgoing call
-  const handleStartCall = (
+  // 2. Serverless Edge Signal Polling (Works 24/7 on Cloudflare Pages even without WebSocket server!)
+  useEffect(() => {
+    if (!user?.id || WS_BASE_URL) return;
+
+    const poll = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      const res = await callService.pollSignals(user.id);
+      if (Array.isArray(res.signals)) {
+        for (const sig of res.signals) {
+          processIncomingSignal(sig);
+        }
+      }
+      if (Array.isArray(res.typing)) {
+        window.dispatchEvent(new CustomEvent('vertex_edge_typing', { detail: res.typing }));
+      }
+    };
+
+    poll();
+    const timer = setInterval(poll, 1300);
+    return () => clearInterval(timer);
+  }, [user?.id]);
+
+  // Start outgoing call (WebSocket + Persistent REST API + Edge KV Signaling)
+  const handleStartCall = async (
     title: string,
-    callType: 'video' | 'audio' | 'voice' = 'video',
+    callType: 'video' | 'audio' | 'voice' | 'group' = 'video',
     targetUserId?: string,
     targetConnectId?: string,
     customRoomName?: string
@@ -254,6 +275,18 @@ export const MainLayout: React.FC = () => {
         ? `call_${[user?.id || 'anon', targetUserId].sort().join('_')}_${Date.now()}`
         : `meet_${Date.now()}`);
 
+    const sessionObj: ActiveCallSession = {
+      roomName,
+      title,
+      callType,
+      targetUserId,
+      targetConnectId,
+    };
+
+    setActiveCallSession(sessionObj);
+    setIsCallMinimized(false);
+
+    // 1. Send via WebSocket if active
     if (targetUserId && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({
@@ -266,18 +299,23 @@ export const MainLayout: React.FC = () => {
           call_type: callType,
         })
       );
-      showToast(`Calling ${title}… Ringing teammate.`);
+      showToast(`Calling ${title}…`);
+    } else if (targetUserId) {
+      showToast(`Calling ${title}…`);
     } else {
-      showToast(`Joining room: ${title}. Connecting LiveKit cloud…`);
+      showToast(`Joining room: ${title}…`);
     }
 
-    setActiveCallSession({
-      roomName,
-      title,
-      callType,
-      targetUserId,
-    });
-    setIsCallMinimized(false);
+    // 2. Always persist in DB & dispatch Edge KV signal!
+    if (user?.id) {
+      const apiType = (callType === 'audio' || callType === 'voice') ? 'voice' : callType === 'group' ? 'group' : 'video';
+      const initRes = await callService.initiateCall(user.id, targetUserId, apiType, roomName, title);
+      if (initRes && initRes.success === false && initRes.reason === 'busy') {
+        stopOutgoingRingtone();
+        setActiveCallSession(null);
+        showToast(initRes.message || `${title} is busy on another call.`);
+      }
+    }
   };
 
   // Accept incoming call
@@ -295,20 +333,43 @@ export const MainLayout: React.FC = () => {
       );
     }
 
+    if (user?.id) {
+      callService.respondCall(incomingCall.room_name, user.id, true);
+    }
+
     setActiveCallSession({
       roomName: incomingCall.room_name,
       title: incomingCall.caller_name,
       callType: incomingCall.call_type,
       targetUserId: incomingCall.caller_id,
+      targetConnectId: incomingCall.caller_connect_id,
       isIncoming: true,
     });
     setIsCallMinimized(false);
     setIncomingCall(null);
   };
 
-  // Decline incoming call
-  const handleDeclineIncomingCall = () => {
+  // Decline or auto-timeout incoming call
+  const handleDeclineIncomingCall = (isTimeout = false) => {
     if (!incomingCall) return;
+
+    if (isTimeout) {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'call_timeout',
+            target_user_id: incomingCall.caller_id,
+            room_name: incomingCall.room_name,
+          })
+        );
+      }
+      if (user?.id) {
+        callService.timeoutCall(incomingCall.room_name, incomingCall.caller_id, user.id);
+      }
+      setIncomingCall(null);
+      showToast('Missed call');
+      return;
+    }
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -321,26 +382,60 @@ export const MainLayout: React.FC = () => {
       );
     }
 
+    if (user?.id) {
+      callService.respondCall(incomingCall.room_name, user.id, false);
+    }
+
     setIncomingCall(null);
     showToast('Call declined.');
   };
 
-  // End active call and trigger AI Meeting Intelligence
-  const handleEndCall = async (stats?: CallEndStats) => {
-    if (activeCallSession && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+  // Handle outgoing 35s timeout (Missed Call)
+  const handleOutgoingTimeout = () => {
+    const current = activeCallSession;
+    if (!current) return;
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({
-          type: 'call_ended',
-          target_user_id: activeCallSession.targetUserId,
-          room_name: activeCallSession.roomName,
+          type: 'call_timeout',
+          target_user_id: current.targetUserId,
+          room_name: current.roomName,
         })
       );
     }
+    if (user?.id) {
+      callService.timeoutCall(current.roomName, user.id, current.targetUserId);
+    }
+    setActiveCallSession(null);
+    setIsCallMinimized(false);
+  };
+
+  // End active call and trigger AI Meeting Intelligence ONLY for connected calls > 3s
+  const handleEndCall = async (stats?: CallEndStats) => {
     const currentSession = activeCallSession;
+    if (currentSession && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'call_ended',
+          target_user_id: currentSession.targetUserId,
+          room_name: currentSession.roomName,
+        })
+      );
+    }
+    if (currentSession && user?.id) {
+      callService.endCall(
+        currentSession.roomName,
+        user.id,
+        stats?.duration_seconds || 0,
+        currentSession.targetUserId
+      );
+    }
+
     setActiveCallSession(null);
     setIsCallMinimized(false);
 
-    if (stats && stats.duration_seconds > 0) {
+    if (stats && stats.was_connected && stats.duration_seconds >= 3) {
       showToast('Generating AI Meeting Intelligence Report…');
       try {
         const res = await fetch(`${API_BASE_URL}/api/v1/intelligence/summarize`, {
@@ -375,6 +470,7 @@ export const MainLayout: React.FC = () => {
       {/* Sidebar - Vertex Connect Executive Dock */}
       <Sidebar
         currentPage={currentPage}
+        unreadCount={unreadChatCount}
         onPageChange={(p) => {
           setCurrentPage(p);
           window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -387,6 +483,8 @@ export const MainLayout: React.FC = () => {
           <Topbar
             searchQuery={searchQuery}
             onSearchChange={(q) => setSearchQuery(q)}
+            onNavigatePage={(p) => setCurrentPage(p)}
+            onOpenCallHistory={() => setIsCallHistoryOpen(true)}
             onShowNotificationToast={showToast}
           />
         )}
@@ -399,6 +497,7 @@ export const MainLayout: React.FC = () => {
                   handleStartCall(name, callType || 'video', targetUserId, targetConnectId)
                 }
                 onOpenCallHistory={() => setIsCallHistoryOpen(true)}
+                onUnreadCountChange={(n) => setUnreadChatCount(n)}
                 onShowToast={showToast}
               />
             )}
@@ -411,7 +510,14 @@ export const MainLayout: React.FC = () => {
               />
             )}
             {currentPage === 'intelligence' && <IntelligencePage onShowToast={showToast} />}
-            {currentPage === 'teams' && <TeamsPage onShowToast={showToast} />}
+            {currentPage === 'teams' && (
+              <TeamsPage
+                onStartCall={(title, roomName) =>
+                  handleStartCall(title, 'group', undefined, undefined, roomName)
+                }
+                onShowToast={showToast}
+              />
+            )}
             {currentPage === 'files' && <FilesPage onShowToast={showToast} />}
             {currentPage === 'analytics' && <AnalyticsPage />}
             {currentPage === 'settings' && <SettingsPage onShowToast={showToast} />}
@@ -419,9 +525,10 @@ export const MainLayout: React.FC = () => {
         </main>
       </div>
 
-      {/* Mobile Bottom Navigation Bar (WhatsApp/Telegram style) */}
+      {/* Mobile Bottom Navigation Bar */}
       <MobileBottomNav
         currentPage={currentPage}
+        unreadCount={unreadChatCount}
         onPageChange={(page) => setCurrentPage(page)}
       />
 
@@ -429,8 +536,8 @@ export const MainLayout: React.FC = () => {
       <CustomizerDrawer />
 
       <Suspense fallback={null}>
-        {/* Live Video / Audio Call Modal (LiveKit WebRTC Cloud) */}
-        {activeCallSession && !isCallMinimized && (
+        {/* Live Video / Audio Call Modal (Kept mounted when minimized so audio/video stays live!) */}
+        {activeCallSession && (
           <CallModal
             session={activeCallSession}
             currentUser={{
@@ -438,7 +545,11 @@ export const MainLayout: React.FC = () => {
               name: user?.name || 'You',
               connect_id: user?.connect_id,
             }}
+            isMinimized={isCallMinimized}
+            controlRef={callControlRef}
+            onSyncState={(s) => setCallBarState(s)}
             onEndCall={(stats) => handleEndCall(stats)}
+            onTimeout={handleOutgoingTimeout}
             onMinimize={() => setIsCallMinimized(true)}
             onShowToast={showToast}
           />
@@ -471,7 +582,15 @@ export const MainLayout: React.FC = () => {
       {activeCallSession && isCallMinimized && (
         <CallBar
           activeCallTitle={activeCallSession.title}
-          onEndCall={handleEndCall}
+          callType={activeCallSession.callType}
+          durationSeconds={callBarState.durationSeconds}
+          isMuted={callBarState.isMuted}
+          isVideoOn={callBarState.isVideoOn}
+          isScreenSharing={callBarState.isScreenSharing}
+          onToggleMute={() => callControlRef.current?.toggleMute()}
+          onToggleVideo={() => callControlRef.current?.toggleVideo()}
+          onToggleScreenShare={() => callControlRef.current?.toggleScreenShare()}
+          onEndCall={() => callControlRef.current?.hangup() || handleEndCall()}
           onExpand={() => setIsCallMinimized(false)}
           onShowToast={showToast}
         />
@@ -482,7 +601,7 @@ export const MainLayout: React.FC = () => {
         <IncomingCallModal
           call={incomingCall}
           onAccept={handleAcceptIncomingCall}
-          onDecline={handleDeclineIncomingCall}
+          onDecline={(isTimeout) => handleDeclineIncomingCall(isTimeout)}
         />
       )}
 

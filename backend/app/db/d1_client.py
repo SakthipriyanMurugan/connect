@@ -2,7 +2,6 @@ import os
 import json
 import uuid
 import logging
-import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import time
@@ -18,6 +17,7 @@ class CloudflareD1Client:
         self.database_id = settings.CLOUDFLARE_D1_DATABASE_ID
         self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/d1/database/{self.database_id}/query"
         self._cached_token: Optional[str] = None
+        self._d1_auth_failed: bool = False
         # Persistent Keep-Alive HTTP client for zero connection renegotiation latency
         self._http_client: Optional[httpx.AsyncClient] = None
         # Ultra-Speed In-Memory Hot Caches (sub-0.1ms instant access)
@@ -57,17 +57,20 @@ class CloudflareD1Client:
             self._cache_users_by_email[str(u["email"]).strip().lower()] = u
 
     def _get_token(self, force_refresh: bool = False) -> str:
+        if not settings.USE_CLOUDFLARE_D1:
+            return ""
         if force_refresh:
             self._cached_token = None
-            try:
-                subprocess.run(["npx", "wrangler", "whoami"], capture_output=True, timeout=25, shell=True)
-            except Exception as e:
-                logger.warning(f"Auto-refresh wrangler token notice: {e}")
 
         if not force_refresh and self._cached_token:
             return self._cached_token
 
-        # Check default.toml first for latest active OAuth token
+        # Prefer explicit permanent API token in settings/env first
+        if settings.CLOUDFLARE_API_TOKEN and not settings.CLOUDFLARE_API_TOKEN.startswith("cfoat_"):
+            self._cached_token = settings.CLOUDFLARE_API_TOKEN
+            return settings.CLOUDFLARE_API_TOKEN
+
+        # Check wrangler OAuth config next
         candidates = [
             Path(os.environ.get("APPDATA", "")) / "xdg.config" / ".wrangler" / "config" / "default.toml",
             Path.home() / ".config" / ".wrangler" / "config" / "default.toml"
@@ -90,10 +93,12 @@ class CloudflareD1Client:
         return ""
 
     async def execute(self, sql: str, params: Optional[List[Any]] = None) -> Dict[str, Any]:
-        """Execute a raw SQL query or mutation on Cloudflare D1."""
+        """Execute a raw SQL query or mutation on Cloudflare D1 without blocking."""
+        if self._d1_auth_failed:
+            return {"success": False, "results": [], "error": "D1 token unavailable/expired"}
+
         token = self._get_token()
         if not token:
-            logger.warning("Cloudflare D1 token not found. Skipping D1 execution.")
             return {"success": False, "results": []}
 
         payload: Dict[str, Any] = {"sql": sql}
@@ -111,11 +116,17 @@ class CloudflareD1Client:
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             res = await client.post(self.base_url, json=payload, headers=headers)
             
-            # If token expired (401), auto-refresh token and retry once
+            # If token expired (401), try env fallback once; do NOT block event loop
             if res.status_code == 401:
-                token = self._get_token(force_refresh=True)
-                headers["Authorization"] = f"Bearer {token}"
-                res = await client.post(self.base_url, json=payload, headers=headers)
+                fallback = settings.CLOUDFLARE_API_TOKEN
+                if fallback and fallback != token:
+                    self._cached_token = fallback
+                    headers["Authorization"] = f"Bearer {fallback}"
+                    res = await client.post(self.base_url, json=payload, headers=headers)
+                if res.status_code == 401:
+                    self._d1_auth_failed = True
+                    logger.warning("Cloudflare D1 authentication failed (401); operating cleanly on local SQLite store.")
+                    return {"success": False, "results": [], "error": "D1 401 unauthorized"}
 
             if res.status_code == 200:
                 data = res.json()
@@ -373,6 +384,23 @@ class CloudflareD1Client:
         sql = "UPDATE user_connections SET status = ?, updated_at = ? WHERE id = ?;"
         await self.execute(sql, [status, now, conn_id])
 
+    async def delete_connection(self, conn_id: Optional[str] = None, user1: Optional[str] = None, user2: Optional[str] = None):
+        if user1 and user2:
+            pair_key = tuple(sorted([user1, user2]))
+            self._cache_connections.pop(pair_key, None)
+        if conn_id:
+            to_del = [k for k, v in self._cache_connections.items() if v.get("id") == conn_id]
+            for k in to_del:
+                self._cache_connections.pop(k, None)
+        self._cache_user_connections_list.clear()
+        if conn_id:
+            await self.execute("DELETE FROM user_connections WHERE id = ?;", [conn_id])
+        if user1 and user2:
+            await self.execute(
+                "DELETE FROM user_connections WHERE (requester_id = ? AND receiver_id = ?) OR (requester_id = ? AND receiver_id = ?);",
+                [user1, user2, user2, user1]
+            )
+
     # ----------------- 4. MESSAGES IN CLOUDFLARE D1 (INSTANT CACHE & ASYNC PERSIST) -----------------
     async def save_message(self, m_dict: Dict[str, Any]):
         cid = m_dict.get("conversation_id")
@@ -390,7 +418,7 @@ class CloudflareD1Client:
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         reactions_str = json.dumps(m_dict.get("reactions") or {}) if isinstance(m_dict.get("reactions"), dict) else str(m_dict.get("reactions") or "{}")
-        await self.execute(sql, [
+        res = await self.execute(sql, [
             m_dict["id"], m_dict.get("workspace_id", "ws-1"), m_dict["conversation_id"],
             m_dict["sender_id"], m_dict["sender_name"], m_dict.get("receiver_id"),
             m_dict["content"], m_dict.get("file_url"), m_dict.get("file_name"),
@@ -398,6 +426,20 @@ class CloudflareD1Client:
             m_dict.get("reply_to_snippet"), reactions_str, 1 if m_dict.get("is_read") else 0,
             m_dict["created_at"]
         ])
+        if not res.get("success") and res.get("error") and "no column named" in str(res.get("error")).lower():
+            fallback_sql = """
+            INSERT OR REPLACE INTO messages (
+                id, workspace_id, conversation_id, sender_id, sender_name, receiver_id,
+                content, file_url, file_name, file_size, file_type, is_read, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            await self.execute(fallback_sql, [
+                m_dict["id"], m_dict.get("workspace_id", "ws-1"), m_dict["conversation_id"],
+                m_dict["sender_id"], m_dict["sender_name"], m_dict.get("receiver_id"),
+                m_dict["content"], m_dict.get("file_url"), m_dict.get("file_name"),
+                m_dict.get("file_size"), m_dict.get("file_type"), 1 if m_dict.get("is_read") else 0,
+                m_dict["created_at"]
+            ])
 
     async def get_messages(self, conversation_id: str) -> List[Dict[str, Any]]:
         if conversation_id in self._cache_messages and self._cache_messages[conversation_id]:
@@ -409,22 +451,50 @@ class CloudflareD1Client:
         WHERE conversation_id = ?
         ORDER BY created_at ASC;
         """
-        rows = await self.fetch_all(sql, [conversation_id])
+        res = await self.execute(sql, [conversation_id])
+        rows = res.get("results", [])
+        if not res.get("success") and res.get("error") and "no such column" in str(res.get("error")).lower():
+            rows = await self.fetch_all(
+                "SELECT id, workspace_id, conversation_id, sender_id, sender_name, receiver_id, content, file_url, file_name, file_size, file_type, is_read, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC;",
+                [conversation_id]
+            )
         for r in rows:
             if isinstance(r.get("reactions"), str):
                 try:
                     r["reactions"] = json.loads(r["reactions"])
                 except Exception:
                     r["reactions"] = {}
+            elif not r.get("reactions"):
+                r["reactions"] = {}
             r["is_read"] = bool(r.get("is_read"))
-        self._cache_messages[conversation_id] = rows
+        if rows:
+            self._cache_messages[conversation_id] = rows
         return rows
+
+    async def clear_messages(self, conversation_id: str):
+        self._cache_messages[conversation_id] = []
+        await self.execute("DELETE FROM messages WHERE conversation_id = ?;", [conversation_id])
+
+    async def delete_messages(self, conversation_id: Optional[str], message_ids: List[str]):
+        id_set = set(message_ids)
+        if conversation_id and conversation_id in self._cache_messages:
+            self._cache_messages[conversation_id] = [
+                m for m in self._cache_messages[conversation_id] if m.get("id") not in id_set
+            ]
+        for mid in message_ids:
+            await self.execute("DELETE FROM messages WHERE id = ?;", [mid])
 
     async def mark_messages_read(self, conversation_id: str, reader_id: str):
         sql = "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND receiver_id = ? AND is_read = 0;"
         await self.execute(sql, [conversation_id, reader_id])
 
-    async def react_message(self, message_id: str, reactions: Dict[str, Any]):
+    async def react_message(self, message_id: str, reactions: Dict[str, Any], conversation_id: Optional[str] = None):
+        for cid, msgs in self._cache_messages.items():
+            if conversation_id and cid != conversation_id:
+                continue
+            for m in msgs:
+                if m.get("id") == message_id:
+                    m["reactions"] = reactions
         reactions_str = json.dumps(reactions)
         sql = "UPDATE messages SET reactions = ? WHERE id = ?;"
         await self.execute(sql, [reactions_str, message_id])

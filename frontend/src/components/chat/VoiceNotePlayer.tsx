@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Play, Pause, Mic } from 'lucide-react';
+import { API_BASE_URL } from '../../config/api';
 
 interface VoiceNotePlayerProps {
   audioUrl: string;
@@ -10,6 +11,9 @@ interface VoiceNotePlayerProps {
 export function sanitizeMediaUrl(url?: string | null): string {
   if (!url) return '';
   if (url.startsWith('data:') || url.startsWith('blob:')) return url;
+  if (url.startsWith('/api/') || url.startsWith('/uploads/')) {
+    return `${API_BASE_URL}${url}`;
+  }
   if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
     // If it's a dev localhost link on production HTTPS, do NOT fetch it to prevent mixed content & ERR_CONNECTION_REFUSED
     if (url.includes('localhost:8000') || url.includes('127.0.0.1:8000')) {

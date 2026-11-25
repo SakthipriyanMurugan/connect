@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
-import { FileText, Upload, HardDrive, Download, Trash2, FolderPlus } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { FileText, Upload, HardDrive, Download, Trash2, FolderPlus, Loader2 } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import { API_BASE_URL } from '../../config/api';
+import { sanitizeMediaUrl } from '../chat/VoiceNotePlayer';
 
 interface FilesPageProps {
   onShowToast: (msg: string) => void;
@@ -12,33 +15,82 @@ interface UploadedFile {
   date: string;
   sharedBy: string;
   type: string;
+  file_url?: string;
 }
 
 export const FilesPage: React.FC<FilesPageProps> = ({ onShowToast }) => {
-  // Clean initial state (empty until user uploads)
+  const { user } = useAuth();
   const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
 
-  const handleUploadSim = () => {
+  const loadFiles = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/files/list`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setFiles(data);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load files', e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadFiles();
+  }, []);
+
+  const handleUploadReal = () => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.onchange = (e: any) => {
+    input.onchange = async (e: any) => {
       const file = e.target.files?.[0];
-      if (file) {
-        const sizeKb = Math.round(file.size / 1024);
-        const sizeStr = sizeKb > 1024 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`;
-        const newFile: UploadedFile = {
-          id: 'f-' + Date.now(),
-          name: file.name,
-          size: sizeStr,
-          date: 'Just now',
-          sharedBy: 'You',
-          type: file.name.split('.').pop() || 'doc',
-        };
-        setFiles([newFile, ...files]);
-        onShowToast(`Uploaded ${file.name} to Cloudflare R2 / MinIO storage.`);
+      if (!file) return;
+      setIsUploading(true);
+      onShowToast(`Uploading ${file.name}...`);
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/v1/files/upload?user_id=${encodeURIComponent(user?.id || '')}&shared_by=${encodeURIComponent(user?.name || 'You')}`,
+          { method: 'POST', body: formData }
+        );
+        if (res.ok) {
+          const uploaded = await res.json();
+          const newFile: UploadedFile = {
+            id: uploaded.id || 'f-' + Date.now(),
+            name: uploaded.file_name || file.name,
+            size: uploaded.file_size || '1 KB',
+            date: new Date().toISOString(),
+            sharedBy: user?.name || 'You',
+            type: (uploaded.file_name || file.name).split('.').pop() || 'doc',
+            file_url: uploaded.file_url,
+          };
+          setFiles((prev) => [newFile, ...prev]);
+          onShowToast(`Uploaded ${newFile.name} successfully!`);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          onShowToast(err.detail || 'Upload failed');
+        }
+      } catch {
+        onShowToast('Upload failed. Check connection.');
+      } finally {
+        setIsUploading(false);
       }
     };
     input.click();
+  };
+
+  const handleDeleteFile = async (fileId: string, fileName: string) => {
+    setFiles((prev) => prev.filter((f) => f.id !== fileId));
+    onShowToast(`Removed ${fileName}`);
+    try {
+      await fetch(`${API_BASE_URL}/api/v1/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
+    } catch {}
   };
 
   return (
@@ -54,11 +106,12 @@ export const FilesPage: React.FC<FilesPageProps> = ({ onShowToast }) => {
         </div>
         <button
           type="button"
-          onClick={handleUploadSim}
-          className="px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#718bff] to-[#9b83f7] hover:brightness-110 flex items-center gap-1.5 shadow-md cursor-pointer"
+          disabled={isUploading}
+          onClick={handleUploadReal}
+          className="px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#718bff] to-[#9b83f7] hover:brightness-110 flex items-center gap-1.5 shadow-md cursor-pointer disabled:opacity-60"
         >
-          <Upload className="w-4 h-4" />
-          <span>Upload File</span>
+          {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+          <span>{isUploading ? 'Uploading...' : 'Upload File'}</span>
         </button>
       </div>
 
@@ -73,7 +126,7 @@ export const FilesPage: React.FC<FilesPageProps> = ({ onShowToast }) => {
               Free Cloud Storage Quota (0 Cost Strategy)
             </b>
             <span className="text-[11px] text-[#6f7899] dark:text-[#aeb8dc]">
-              {files.length > 0 ? `${files.length} file(s) stored` : '0 MB used'} of 10.00 GB available (Cloudflare R2 Free Tier / Local MinIO)
+              {files.length > 0 ? `${files.length} file(s) stored` : '0 MB used'} of 10.00 GB available (Cloudflare KV / D1 Vault)
             </span>
           </div>
         </div>
@@ -83,7 +136,11 @@ export const FilesPage: React.FC<FilesPageProps> = ({ onShowToast }) => {
       </div>
 
       {/* Files Table or Clean Empty State */}
-      {files.length === 0 ? (
+      {isLoading ? (
+        <div className="glass-panel p-12 text-center text-xs text-[#6f7899] dark:text-[#aeb8dc]">
+          Loading shared files...
+        </div>
+      ) : files.length === 0 ? (
         <div className="glass-panel p-12 text-center flex flex-col items-center justify-center">
           <div className="w-14 h-14 rounded-2xl bg-[#718bff]/10 text-[var(--accent)] flex items-center justify-center mb-3">
             <FolderPlus className="w-7 h-7" />
@@ -96,8 +153,9 @@ export const FilesPage: React.FC<FilesPageProps> = ({ onShowToast }) => {
           </p>
           <button
             type="button"
-            onClick={handleUploadSim}
-            className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#718bff] to-[#9b83f7] shadow-md"
+            disabled={isUploading}
+            onClick={handleUploadReal}
+            className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#718bff] to-[#9b83f7] shadow-md cursor-pointer disabled:opacity-60"
           >
             Upload First File
           </button>
@@ -115,7 +173,12 @@ export const FilesPage: React.FC<FilesPageProps> = ({ onShowToast }) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-black/5 dark:divide-white/5">
-              {files.map((file) => (
+              {files.map((file) => {
+                const href = file.file_url ? sanitizeMediaUrl(file.file_url) : '';
+                const formattedDate = file.date && file.date.includes('T')
+                  ? new Date(file.date).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+                  : file.date;
+                return (
                 <tr key={file.id} className="hover:bg-white/40 dark:hover:bg-white/5 transition-colors">
                   <td className="py-3.5 pr-4 flex items-center gap-2.5 font-bold text-[#182044] dark:text-[#f1f3ff]">
                     <FileText className="w-4 h-4 text-[var(--accent)] shrink-0" />
@@ -123,30 +186,42 @@ export const FilesPage: React.FC<FilesPageProps> = ({ onShowToast }) => {
                   </td>
                   <td className="py-3.5 pr-4 text-[#6f7899] dark:text-[#aeb8dc]">{file.size}</td>
                   <td className="py-3.5 pr-4 font-medium text-[#182044] dark:text-[#eef1ff]">{file.sharedBy}</td>
-                  <td className="py-3.5 pr-4 text-[#6f7899] dark:text-[#aeb8dc]">{file.date}</td>
+                  <td className="py-3.5 pr-4 text-[#6f7899] dark:text-[#aeb8dc]">{formattedDate}</td>
                   <td className="py-3.5 text-right space-x-2">
+                    {href ? (
+                      <a
+                        href={href}
+                        download={file.name}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => onShowToast(`Downloading ${file.name}`)}
+                        className="p-1 text-[var(--accent)] hover:opacity-80 inline-block"
+                        title="Download"
+                      >
+                        <Download className="w-4 h-4 inline" />
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onShowToast('Download URL unavailable for this legacy file')}
+                        className="p-1 text-[#9aa5be] inline-block cursor-not-allowed"
+                        title="Download unavailable"
+                      >
+                        <Download className="w-4 h-4 inline" />
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => onShowToast(`Downloading ${file.name}`)}
-                      className="p-1 text-[var(--accent)] hover:opacity-80"
-                      title="Download"
-                    >
-                      <Download className="w-4 h-4 inline" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFiles(files.filter((f) => f.id !== file.id));
-                        onShowToast('File removed.');
-                      }}
-                      className="p-1 text-[#f04454] hover:opacity-80"
+                      onClick={() => handleDeleteFile(file.id, file.name)}
+                      className="p-1 text-[#f04454] hover:opacity-80 cursor-pointer"
                       title="Delete"
                     >
                       <Trash2 className="w-4 h-4 inline" />
                     </button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

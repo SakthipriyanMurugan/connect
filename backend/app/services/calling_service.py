@@ -22,6 +22,11 @@ class CallingService:
         target_user_id: Optional[str] = None
     ) -> CallModel:
         now = datetime.utcnow()
+        existing_res = await db.execute(select(CallModel).where(CallModel.id == call_id))
+        existing_call = existing_res.scalar_one_or_none()
+        if existing_call:
+            return existing_call
+
         new_call = CallModel(
             id=call_id,
             caller_id=caller_id,

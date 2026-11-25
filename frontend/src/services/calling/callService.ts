@@ -54,6 +54,41 @@ export const callService = {
   },
 
   /**
+   * Poll real-time signals (incoming call, accept/reject/cancel, busy, typing) over serverless edge
+   */
+  async pollSignals(userId: string): Promise<{ signals: any[]; typing: string[] }> {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/calls/signals?user_id=${encodeURIComponent(userId)}`, {
+        cache: 'no-store',
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch {}
+    return { signals: [], typing: [] };
+  },
+
+  /**
+   * Record missed call on 35s timeout
+   */
+  async timeoutCall(callId: string, callerId: string, targetUserId?: string) {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/calls/timeout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          call_id: callId,
+          caller_id: callerId,
+          target_user_id: targetUserId,
+          room_name: callId,
+        }),
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    return null;
+  },
+
+  /**
    * Respond to call (accept or reject)
    */
   async respondCall(callId: string, userId: string, accepted: boolean) {
@@ -77,7 +112,7 @@ export const callService = {
   /**
    * End call and record duration
    */
-  async endCall(callId: string, userId: string, durationSeconds: number) {
+  async endCall(callId: string, userId: string, durationSeconds: number, targetUserId?: string) {
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/calls/end`, {
         method: 'POST',
@@ -85,6 +120,7 @@ export const callService = {
         body: JSON.stringify({
           call_id: callId,
           user_id: userId,
+          target_user_id: targetUserId,
           duration_seconds: durationSeconds,
         }),
       });

@@ -76,12 +76,18 @@ const getInitials = (name?: string, connectId?: string) => {
 };
 
 interface MessagesPageProps {
-  onStartCall: (name: string, callType?: 'video' | 'audio', targetUserId?: string, targetConnectId?: string) => void;
+  onStartCall: (name: string, callType?: 'video' | 'audio' | 'group', targetUserId?: string, targetConnectId?: string) => void;
   onShowToast: (msg: string) => void;
   onOpenCallHistory?: () => void;
+  onUnreadCountChange?: (count: number) => void;
 }
 
-export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowToast, onOpenCallHistory }) => {
+export const MessagesPage: React.FC<MessagesPageProps> = ({
+  onStartCall,
+  onShowToast,
+  onOpenCallHistory,
+  onUnreadCountChange,
+}) => {
   const { user } = useAuth();
 
   // Active view tab: 'chats' | 'requests'
@@ -343,12 +349,113 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   const activeFriendRef = useRef<ConnectionUser | null>(activeFriend);
   const typingTimeoutRef = useRef<any>(null);
   const lastTypingSentRef = useRef<number>(0);
+  const lastUnreadCheckRef = useRef<number>(0);
+
+  const deletedMsgIdsRef = useRef<Set<string>>(
+    (() => {
+      try {
+        const rawIds = localStorage.getItem('vertex_deleted_msg_ids');
+        return rawIds ? new Set<string>(JSON.parse(rawIds)) : new Set<string>();
+      } catch {
+        return new Set<string>();
+      }
+    })()
+  );
+
+  const markMessagesDeleted = (ids: string[]) => {
+    ids.forEach((id) => deletedMsgIdsRef.current.add(id));
+    try {
+      const compact = Array.from(deletedMsgIdsRef.current).slice(-500);
+      localStorage.setItem('vertex_deleted_msg_ids', JSON.stringify(compact));
+    } catch {}
+  };
+
+  const [unreadMap, setUnreadMap] = useState<Record<string, number>>({});
+  const lastReadMapRef = useRef<Record<string, string>>(
+    (() => {
+      try {
+        const savedUserStr = localStorage.getItem('vertexUser');
+        const uid = savedUserStr ? JSON.parse(savedUserStr)?.id : '';
+        if (uid) {
+          const rawMap = localStorage.getItem(`vertex_last_read_${uid}`);
+          if (rawMap) return JSON.parse(rawMap);
+        }
+      } catch {}
+      return {};
+    })()
+  );
+
+  const markConvAsRead = (convId?: string) => {
+    if (!convId) return;
+    lastReadMapRef.current[convId] = new Date().toISOString();
+    if (user?.id) {
+      try {
+        localStorage.setItem(`vertex_last_read_${user.id}`, JSON.stringify(lastReadMapRef.current));
+      } catch {}
+    }
+    setUnreadMap((prev) => {
+      if (!prev[convId]) return prev;
+      const next = { ...prev };
+      delete next[convId];
+      return next;
+    });
+  };
+
+  const getDisappearingTtlMs = (convId?: string): number => {
+    if (!convId) return 0;
+    let opt = disappearingOption;
+    try {
+      const storedOpt = localStorage.getItem(`vertex_disappearing_${convId}`);
+      if (storedOpt && ['off', '24h', '7d', '90d'].includes(storedOpt)) {
+        opt = storedOpt as any;
+      }
+    } catch {}
+    if (opt === '24h') return 24 * 60 * 60 * 1000;
+    if (opt === '7d') return 7 * 24 * 60 * 60 * 1000;
+    if (opt === '90d') return 90 * 24 * 60 * 60 * 1000;
+    return 0;
+  };
+
+  const filterVisibleMessages = (list: ChatMessage[], convId?: string): ChatMessage[] => {
+    const ttlMs = getDisappearingTtlMs(convId);
+    const cutoff = ttlMs > 0 ? Date.now() - ttlMs : 0;
+    return (list || []).filter((m) => {
+      if (!m || !m.id || deletedMsgIdsRef.current.has(m.id)) return false;
+      if (cutoff > 0 && m.created_at) {
+        const ts = new Date(m.created_at).getTime();
+        if (!isNaN(ts) && ts < cutoff) return false;
+      }
+      return true;
+    });
+  };
+
+  useEffect(() => {
+    const totalUnread = Object.values(unreadMap).reduce((sum, n) => sum + (Number(n) || 0), 0);
+    onUnreadCountChange?.(totalUnread + pendingIncoming.length);
+  }, [unreadMap, pendingIncoming.length, onUnreadCountChange]);
+
+  useEffect(() => {
+    if (activeFriend?.conversation_id) {
+      try {
+        const savedOpt = localStorage.getItem(`vertex_disappearing_${activeFriend.conversation_id}`);
+        if (savedOpt && ['off', '24h', '7d', '90d'].includes(savedOpt)) {
+          setDisappearingOption(savedOpt as any);
+        } else {
+          setDisappearingOption('off');
+        }
+      } catch {
+        setDisappearingOption('off');
+      }
+      markConvAsRead(activeFriend.conversation_id);
+    }
+  }, [activeFriend?.conversation_id]);
 
   useEffect(() => {
     activeFriendRef.current = activeFriend;
     shouldInstantScrollRef.current = true;
     isNearBottomRef.current = true;
     setShowScrollBottomBtn(false);
+    setIsTyping(false);
     if (activeFriend) {
       hasRecentlyDeletedRef.current = false;
       if (user?.id) {
@@ -372,7 +479,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
   }, [friends, user?.id]);
 
   useEffect(() => {
-    if (activeFriend?.conversation_id && messages.length > 0) {
+    if (activeFriend?.conversation_id) {
       try {
         localStorage.setItem(`vertex_cached_msgs_${activeFriend.conversation_id}`, JSON.stringify(messages.slice(-60)));
       } catch {}
@@ -438,14 +545,45 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       setIsLoadingConnections(true);
     }
     try {
-      const [res, presenceRes] = await Promise.all([
+      if (!WS_BASE_URL) {
+        fetch(`${API_BASE_URL}/api/v1/presence/heartbeat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: user.id, status: 'online' }),
+        }).catch(() => {});
+      }
+
+      const [res, presenceRes, groupsRes] = await Promise.all([
         fetch(`${API_BASE_URL}/api/v1/connections?user_id=${user.id}`),
-        fetch(`${API_BASE_URL}/api/v1/presence`).catch(() => null)
+        fetch(`${API_BASE_URL}/api/v1/presence`).catch(() => null),
+        fetch(`${API_BASE_URL}/api/v1/groups?user_id=${encodeURIComponent(user.id)}`).catch(() => null),
       ]);
 
       let presenceMap: Record<string, any> = {};
       if (presenceRes && presenceRes.ok) {
         presenceMap = await presenceRes.json();
+      }
+
+      let serverGroups: ConnectionUser[] = [];
+      if (groupsRes && groupsRes.ok) {
+        try {
+          const gData = await groupsRes.json();
+          const rawGroups = Array.isArray(gData) ? gData : gData?.groups;
+          if (Array.isArray(rawGroups)) {
+            serverGroups = rawGroups.map((g: any) => {
+              const gid = g.connection_id || g.id;
+              return {
+                connection_id: gid,
+                user_id: g.user_id || gid,
+                name: g.name,
+                connect_id: g.connect_id || `group_${String(g.name || gid).toLowerCase().replace(/\s+/g, '_')}`,
+                bio: g.bio || `Group · ${Array.isArray(g.members) ? g.members.length : 1} participants`,
+                status: 'online' as const,
+                conversation_id: g.conversation_id || gid,
+              };
+            });
+          }
+        } catch {}
       }
 
       if (res.ok) {
@@ -462,12 +600,54 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             };
           });
 
-        // Merge custom saved groups so groups NEVER vanish on fetch!
+        // Merge server groups + custom saved groups so groups sync across members & never vanish
         const savedGroups = loadSavedGroups();
+        const mergedGroups: ConnectionUser[] = [...serverGroups];
+        for (const sg of savedGroups) {
+          if (!mergedGroups.some((g) => g.connection_id === sg.connection_id)) {
+            mergedGroups.push(sg);
+          }
+        }
         const allChats = [
-          ...savedGroups,
-          ...enrichedFriends.filter((ef: ConnectionUser) => !savedGroups.some(sg => sg.connection_id === ef.connection_id))
+          ...mergedGroups,
+          ...enrichedFriends.filter((ef: ConnectionUser) => !mergedGroups.some(sg => sg.connection_id === ef.connection_id))
         ];
+
+        // Light periodic unread count sync for non-active conversations
+        const nowTs = Date.now();
+        if (nowTs - lastUnreadCheckRef.current > 10000) {
+          lastUnreadCheckRef.current = nowTs;
+          const inactive = allChats.filter(
+            (c) => c.conversation_id && c.conversation_id !== activeFriendRef.current?.conversation_id
+          ).slice(0, 8);
+          Promise.allSettled(
+            inactive.map(async (c) => {
+              const r = await fetch(`${API_BASE_URL}/api/v1/messages/${c.conversation_id}`);
+              if (!r.ok) return { convId: c.conversation_id, count: 0 };
+              const msgs = await r.json();
+              const lastReadIso = lastReadMapRef.current[c.conversation_id] || '';
+              const lastReadMs = lastReadIso ? new Date(lastReadIso).getTime() : 0;
+              const unread = (Array.isArray(msgs) ? msgs : []).filter((m: any) => {
+                if (!m || m.sender_id === user.id || deletedMsgIdsRef.current.has(m.id)) return false;
+                if (m.is_read) return false;
+                const msgMs = new Date(m.created_at).getTime();
+                return lastReadMs > 0 ? msgMs > lastReadMs : true;
+              }).length;
+              return { convId: c.conversation_id, count: unread };
+            })
+          ).then((results) => {
+            setUnreadMap((prev) => {
+              const next = { ...prev };
+              for (const item of results) {
+                if (item.status === 'fulfilled' && item.value.convId) {
+                  if (item.value.count > 0) next[item.value.convId] = item.value.count;
+                  else delete next[item.value.convId];
+                }
+              }
+              return next;
+            });
+          }).catch(() => {});
+        }
 
         setFriends(allChats);
         setPendingIncoming((data.pending_incoming || []).map((f: ConnectionUser) => ({
@@ -540,6 +720,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             if (data.type === 'new_message') {
               const newMsg: ChatMessage = data.message;
               // If message belongs to current open conversation
+              if (activeFriendRef.current?.conversation_id !== newMsg.conversation_id && newMsg.sender_id !== user?.id && newMsg.conversation_id) {
+                setUnreadMap((prev) => ({
+                  ...prev,
+                  [newMsg.conversation_id]: (prev[newMsg.conversation_id] || 0) + 1,
+                }));
+              }
               if (activeFriendRef.current?.conversation_id === newMsg.conversation_id) {
                 setMessages((prev) => {
                   if (prev.some((m) => m.id === newMsg.id)) return prev;
@@ -626,6 +812,42 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     };
   }, [user?.id]);
 
+  // 2b. Edge Serverless Signal Listeners (Typing indicators, Connection alerts, Notification navigation)
+  useEffect(() => {
+    if (!user?.id) return;
+    const onEdgeTyping = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const typingFrom: string[] = Array.isArray(detail?.typing_from) ? detail.typing_from : [];
+      if (activeFriendRef.current && !activeFriendRef.current.connection_id.startsWith('group_')) {
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+          setIsTyping(typingFrom.includes(activeFriendRef.current.user_id));
+        }
+      }
+    };
+    const onConnectionSignal = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.type === 'connection_request') {
+        onShowToast(`New connection request from ${detail.from_name || '@' + (detail.from_connect_id || 'user')}`);
+        fetchConnections();
+      } else if (detail?.type === 'connection_accepted') {
+        onShowToast(`${detail.from_name || 'User'} accepted your connection request!`);
+        fetchConnections();
+      }
+    };
+    const onOpenRequests = () => {
+      setChatFilter('requests');
+      setActiveTab('requests');
+    };
+    window.addEventListener('vertex_edge_typing', onEdgeTyping);
+    window.addEventListener('vertex_connection_signal', onConnectionSignal);
+    window.addEventListener('vertex_open_requests', onOpenRequests);
+    return () => {
+      window.removeEventListener('vertex_edge_typing', onEdgeTyping);
+      window.removeEventListener('vertex_connection_signal', onConnectionSignal);
+      window.removeEventListener('vertex_open_requests', onOpenRequests);
+    };
+  }, [user?.id]);
+
   // 3. Fetch message history when active friend changes (with instant cache hydration)
   useEffect(() => {
     if (!activeFriend?.conversation_id) {
@@ -638,12 +860,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     try {
       const cached = localStorage.getItem(`vertex_cached_msgs_${activeFriend.conversation_id}`);
       if (cached) {
-        const parsed = JSON.parse(cached);
+        const parsed = filterVisibleMessages(JSON.parse(cached), activeFriend.conversation_id);
         if (parsed && parsed.length > 0) {
           setMessages(parsed);
           setIsLoadingMessages(false);
         } else {
-          setIsLoadingMessages(true);
+          setMessages([]);
+          setIsLoadingMessages(false);
         }
       } else {
         setIsLoadingMessages(true);
@@ -653,25 +876,61 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }
 
     const fetchMessages = async () => {
-      // If active friend is a custom created group, load messages from localStorage
+      // For groups, fetch persisted server messages AND merge with local offline group cache
       if (activeFriend.connection_id.startsWith('group_')) {
         try {
-          const stored = JSON.parse(localStorage.getItem(`vertex_group_msgs_${activeFriend.connection_id}`) || '[]');
+          let stored: ChatMessage[] = [];
+          try {
+            stored = JSON.parse(localStorage.getItem(`vertex_group_msgs_${activeFriend.connection_id}`) || '[]');
+          } catch {}
+
+          let serverMsgs: ChatMessage[] = [];
+          try {
+            const gRes = await fetch(`${API_BASE_URL}/api/v1/messages/${activeFriend.conversation_id}`, {
+              cache: 'no-store',
+              headers: { 'Cache-Control': 'no-cache' },
+            });
+            if (gRes.ok) {
+              const rawGroup = await gRes.json();
+              serverMsgs = (rawGroup || []).map((m: any) => ({
+                ...m,
+                is_me: m.sender_id === user?.id,
+              }));
+            }
+          } catch {}
+
+          const combinedMap = new Map<string, ChatMessage>();
+          for (const m of stored) {
+            if (m?.id) combinedMap.set(m.id, { ...m, is_me: m.sender_id === user?.id });
+          }
+          for (const m of serverMsgs) {
+            if (m?.id) combinedMap.set(m.id, m);
+          }
+          const combined = filterVisibleMessages(
+            Array.from(combinedMap.values()).sort(
+              (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            ),
+            activeFriend.conversation_id
+          );
+
           setMessages((prev) => {
-            if (prev.length === stored.length) {
+            if (prev.length === combined.length) {
               let changed = false;
               for (let i = 0; i < prev.length; i++) {
-                if (prev[i].id !== stored[i].id || JSON.stringify(prev[i].reactions) !== JSON.stringify(stored[i].reactions)) {
+                if (prev[i].id !== combined[i].id || JSON.stringify(prev[i].reactions) !== JSON.stringify(combined[i].reactions)) {
                   changed = true;
                   break;
                 }
               }
               if (!changed) return prev;
             }
-            return stored;
+            return combined;
           });
+          markConvAsRead(activeFriend.conversation_id);
         } catch {
           setMessages([]);
+        } finally {
+          setIsLoadingMessages(false);
         }
         return;
       }
@@ -683,10 +942,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         });
         if (res.ok) {
           const rawData: any[] = await res.json();
-          const data: ChatMessage[] = (rawData || []).map((m: any) => ({
-            ...m,
-            is_me: m.sender_id === user?.id,
-          }));
+          const data: ChatMessage[] = filterVisibleMessages(
+            (rawData || []).map((m: any) => ({
+              ...m,
+              is_me: m.sender_id === user?.id,
+            })),
+            activeFriend.conversation_id
+          );
+          markConvAsRead(activeFriend.conversation_id);
           setMessages((prev) => {
             if (!data) return prev;
 
@@ -904,38 +1167,45 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }
   };
 
-  // Real-Time Typing Emitter (Throttled for ultra-fast, smooth performance)
+  // Real-Time Typing Emitter (Throttled, works via WS AND Cloudflare Edge KV)
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setInputMessage(val);
 
-    if (activeFriend && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const now = Date.now();
-      // Throttle typing emission to once every 1000ms
-      if (now - lastTypingSentRef.current > 1000) {
-        lastTypingSentRef.current = now;
+    if (!activeFriend || !user?.id || activeFriend.connection_id.startsWith('group_')) return;
+
+    const sendTypingSignal = (typing: boolean) => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(
           JSON.stringify({
             type: 'typing',
             target_user_id: activeFriend.user_id,
-            is_typing: true,
+            is_typing: typing,
           })
         );
+      } else {
+        fetch(`${API_BASE_URL}/api/v1/presence/typing`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from_user_id: user.id,
+            target_user_id: activeFriend.user_id,
+            is_typing: typing,
+          }),
+        }).catch(() => {});
       }
+    };
 
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = setTimeout(() => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && activeFriend) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: 'typing',
-              target_user_id: activeFriend.user_id,
-              is_typing: false,
-            })
-          );
-        }
-      }, 1500);
+    const now = Date.now();
+    if (now - lastTypingSentRef.current > 1500) {
+      lastTypingSentRef.current = now;
+      sendTypingSignal(true);
     }
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      sendTypingSignal(false);
+    }, 1800);
   };
 
   // 7. Send Real-Time Text Message (Instant Optimistic UI + Reply Quote)
@@ -949,10 +1219,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     const replySnippet = replyingTo ? `${replyingTo.sender_name}: ${replyingTo.content.slice(0, 60)}` : undefined;
     const replyId = replyingTo?.id;
 
-    // Handle Group Messaging Persistence
+    // Handle Group Messaging Persistence (Server D1 + localStorage fallback + WS broadcast)
     if (activeFriend.connection_id.startsWith('group_')) {
       const groupMsg: ChatMessage = {
-        id: `msg_grp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        id: tempId,
         conversation_id: activeFriend.connection_id,
         sender_id: user.id,
         sender_name: user.name,
@@ -969,12 +1239,6 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       setInputMessage('');
       setReplyingTo(null);
 
-      // Persist permanently in localStorage
-      try {
-        const stored = JSON.parse(localStorage.getItem(`vertex_group_msgs_${activeFriend.connection_id}`) || '[]');
-        localStorage.setItem(`vertex_group_msgs_${activeFriend.connection_id}`, JSON.stringify([...stored, groupMsg]));
-      } catch {}
-
       // Broadcast to online teammates via WebSocket
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(
@@ -984,6 +1248,37 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             message: groupMsg
           })
         );
+      }
+
+      try {
+        const gSendRes = await fetch(`${API_BASE_URL}/api/v1/messages/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversation_id: activeFriend.connection_id,
+            sender_id: user.id,
+            sender_name: user.name,
+            receiver_id: activeFriend.connection_id,
+            content: messageContent,
+            reply_to_id: replyId,
+            reply_to_snippet: replySnippet,
+          }),
+        });
+        let savedMsg = groupMsg;
+        if (gSendRes.ok) {
+          const gData = await gSendRes.json();
+          if (gData?.message) {
+            savedMsg = { ...gData.message, is_me: true };
+            setMessages((prev) => prev.map((m) => (m.id === tempId ? savedMsg : m)));
+          }
+        }
+        const stored = JSON.parse(localStorage.getItem(`vertex_group_msgs_${activeFriend.connection_id}`) || '[]');
+        localStorage.setItem(`vertex_group_msgs_${activeFriend.connection_id}`, JSON.stringify([...stored, savedMsg]));
+      } catch {
+        try {
+          const stored = JSON.parse(localStorage.getItem(`vertex_group_msgs_${activeFriend.connection_id}`) || '[]');
+          localStorage.setItem(`vertex_group_msgs_${activeFriend.connection_id}`, JSON.stringify([...stored, groupMsg]));
+        } catch {}
       }
       return;
     }
@@ -1117,11 +1412,19 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
       formData.append('file', audioFile);
 
       try {
-        const uploadRes = await fetch(`${API_BASE_URL}/api/v1/files/upload`, {
-          method: 'POST',
-          body: formData,
-        });
+        const uploadRes = await fetch(
+          `${API_BASE_URL}/api/v1/files/upload?user_id=${encodeURIComponent(user.id)}&shared_by=${encodeURIComponent(user.name)}`,
+          {
+            method: 'POST',
+            body: formData,
+          }
+        );
 
+        if (!uploadRes.ok) {
+          const errData = await uploadRes.json().catch(() => ({}));
+          onShowToast(errData.detail || 'Voice note upload failed');
+          return;
+        }
         if (uploadRes.ok) {
           const fileData = await uploadRes.json();
           const durStr = `${Math.floor(durationSec / 60)}:${durationSec % 60 < 10 ? '0' : ''}${durationSec % 60}`;
@@ -1161,9 +1464,25 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }
   };
 
-  // 7c. Emoji Reactions
+  // 7c. Emoji Reactions (Optimistic UI + Server Persistence)
   const handleReactToMessage = async (messageId: string, emoji: string) => {
     if (!user) return;
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id !== messageId) return m;
+        const curr = { ...(m.reactions || {}) };
+        const users = Array.isArray(curr[emoji]) ? [...curr[emoji]] : [];
+        const has = users.includes(user.id) || users.includes(user.name);
+        if (has) {
+          curr[emoji] = users.filter((u) => u !== user.id && u !== user.name);
+          if (curr[emoji].length === 0) delete curr[emoji];
+        } else {
+          curr[emoji] = [...users, user.id];
+        }
+        return { ...m, reactions: curr };
+      })
+    );
+
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/messages/react`, {
         method: 'POST',
@@ -1198,42 +1517,49 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     formData.append('file', file);
 
     try {
-      const uploadRes = await fetch(`${API_BASE_URL}/api/v1/files/upload`, {
+      const uploadRes = await fetch(
+        `${API_BASE_URL}/api/v1/files/upload?user_id=${encodeURIComponent(user.id)}&shared_by=${encodeURIComponent(user.name)}`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+
+      if (!uploadRes.ok) {
+        const errData = await uploadRes.json().catch(() => ({}));
+        onShowToast(errData.detail || `Failed to upload ${file.name}`);
+        return;
+      }
+
+      const fileData = await uploadRes.json();
+      const msgPayload = {
+        conversation_id: activeFriend.conversation_id,
+        sender_id: user.id,
+        sender_name: user.name,
+        receiver_id: activeFriend.user_id,
+        content: `Shared file: ${file.name}`,
+        file_url: fileData.file_url,
+        file_name: fileData.file_name,
+        file_size: fileData.file_size,
+        file_type: fileData.file_type,
+      };
+
+      const sendRes = await fetch(`${API_BASE_URL}/api/v1/messages/send`, {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(msgPayload),
       });
 
-      if (uploadRes.ok) {
-        const fileData = await uploadRes.json();
-        
-        // Send message with attachment
-        const msgPayload = {
-          conversation_id: activeFriend.conversation_id,
-          sender_id: user.id,
-          sender_name: user.name,
-          receiver_id: activeFriend.user_id,
-          content: `Shared file: ${file.name}`,
-          file_url: fileData.file_url,
-          file_name: fileData.file_name,
-          file_size: fileData.file_size,
-          file_type: fileData.file_type,
-        };
-
-        const sendRes = await fetch(`${API_BASE_URL}/api/v1/messages/send`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(msgPayload),
-        });
-
-        if (sendRes.ok) {
-          userSentMessageRef.current = true;
-          const sent = await sendRes.json();
-          setMessages((prev) => [...prev, sent.message]);
-          onShowToast(`File ${file.name} sent successfully!`);
-        }
+      if (sendRes.ok) {
+        userSentMessageRef.current = true;
+        const sent = await sendRes.json();
+        setMessages((prev) => [...prev, { ...(sent.message || {}), is_me: true }]);
+        onShowToast(`File ${file.name} sent successfully!`);
+      } else {
+        onShowToast('File uploaded, but failed to attach to chat.');
       }
     } catch (err) {
-      onShowToast('File upload failed. Ensure backend is running.');
+      onShowToast('File upload failed. Check network connection.');
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -1271,6 +1597,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
         console.warn('Clear chat error:', e);
       }
     }
+    if (convId) {
+      try {
+        localStorage.removeItem(`vertex_cached_msgs_${convId}`);
+      } catch {}
+      markConvAsRead(convId);
+    }
     if (activeFriend.connection_id.startsWith('group_')) {
       try {
         localStorage.removeItem(`vertex_group_msgs_${activeFriend.connection_id}`);
@@ -1302,9 +1634,21 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     }).catch(() => {});
   };
 
-  const handleDeleteMessage = (msgId: string) => {
+  const handleDeleteMessage = async (msgId: string) => {
+    markMessagesDeleted([msgId]);
     setMessages(prev => prev.filter(m => m.id !== msgId));
-    onShowToast('Message deleted for you');
+    onShowToast('Message deleted');
+    try {
+      await fetch(`${API_BASE_URL}/api/v1/messages/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: activeFriend?.conversation_id,
+          message_id: msgId,
+          user_id: user?.id,
+        }),
+      });
+    } catch {}
   };
 
   const handleSelectEmoji = (emoji: string) => {
@@ -1324,36 +1668,53 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     fileInputRef.current.click();
   };
 
-  const handleCreateGroup = () => {
+  const handleCreateGroup = async () => {
     if (!newGroupName.trim()) {
       onShowToast('Please enter a group name');
       return;
     }
-    const groupId = `group_${Date.now()}`;
+    const groupName = newGroupName.trim();
+    const allMemberIds = Array.from(new Set([...(user?.id ? [user.id] : []), ...selectedGroupMembers]));
+    let groupId = `group_${Date.now()}`;
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/groups/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: groupName,
+          created_by: user?.id || 'system',
+          members: allMemberIds,
+        }),
+      });
+      if (res.ok) {
+        const gData = await res.json();
+        if (gData?.group?.connection_id || gData?.group?.id) groupId = gData.group.connection_id || gData.group.id;
+      }
+    } catch {}
+
     const newGroup: ConnectionUser = {
       connection_id: groupId,
       user_id: groupId,
-      name: newGroupName.trim(),
-      connect_id: `group_${newGroupName.trim().toLowerCase().replace(/\s+/g, '_')}`,
-      bio: `Group · ${selectedGroupMembers.length + 1} participants`,
+      name: groupName,
+      connect_id: `group_${groupName.toLowerCase().replace(/\s+/g, '_')}`,
+      bio: `Group · ${allMemberIds.length} participants`,
       status: 'online',
       conversation_id: groupId
     };
 
-    // 1. Permanently store in localStorage
     const saved = loadSavedGroups();
     const updated = [newGroup, ...saved.filter(g => g.connection_id !== groupId)];
     try {
       localStorage.setItem('vertex_custom_groups', JSON.stringify(updated));
     } catch {}
 
-    // 2. Initial welcome message in group
     const initMsg: ChatMessage = {
       id: `msg_init_${Date.now()}`,
       conversation_id: groupId,
       sender_id: user?.id || 'system',
       sender_name: 'System',
-      content: `🎉 You created group "${newGroupName.trim()}" with ${selectedGroupMembers.length + 1} participants.`,
+      content: `Created group "${groupName}" with ${allMemberIds.length} participants.`,
       created_at: new Date().toISOString(),
       status: 'read'
     };
@@ -1498,7 +1859,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
     } else if (chatFilter === 'favourites') {
       if (!favouriteChatIds.has(f.connection_id)) return false;
     } else if (chatFilter === 'unread') {
-      if (f.status !== 'online' && !f.bio?.includes('new')) return false;
+      if (!f.conversation_id || !(unreadMap[f.conversation_id] > 0)) return false;
     }
 
     // 2. Search query filter
@@ -1729,6 +2090,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                     type="button"
                     onClick={() => {
                       setIsChatListMenuOpen(false);
+                      friends.forEach((f) => f.conversation_id && markConvAsRead(f.conversation_id));
+                      setUnreadMap({});
                       setChatFilter('all');
                       onShowToast('All chats marked as read');
                     }}
@@ -2169,6 +2532,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                           {favouriteChatIds.has(f.connection_id) && (
                             <Heart className="w-3.5 h-3.5 text-blue-600 fill-blue-600 shrink-0" />
                           )}
+                          {((f.conversation_id ? unreadMap[f.conversation_id] : 0) || 0) > 0 && (
+                            <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                              {(unreadMap[f.conversation_id!] || 0) > 99 ? '99+' : unreadMap[f.conversation_id!]}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -2265,7 +2633,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
             <div className="flex items-center gap-1 text-slate-600">
               <button
                 type="button"
-                onClick={() => onStartCall(getDisplayName(activeFriend.name, activeFriend.connect_id), 'video', activeFriend.user_id, activeFriend.connect_id)}
+                onClick={() => {
+                  if (isBlocked) {
+                    onShowToast('Unblock this contact before calling');
+                    return;
+                  }
+                  onStartCall(getDisplayName(activeFriend.name, activeFriend.connect_id), 'video', activeFriend.user_id, activeFriend.connect_id);
+                }}
                 title="Video call"
                 className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-blue-50 text-slate-600 hover:text-blue-600 transition-colors cursor-pointer"
               >
@@ -2273,7 +2647,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
               </button>
               <button
                 type="button"
-                onClick={() => onStartCall(getDisplayName(activeFriend.name, activeFriend.connect_id), 'audio', activeFriend.user_id, activeFriend.connect_id)}
+                onClick={() => {
+                  if (isBlocked) {
+                    onShowToast('Unblock this contact before calling');
+                    return;
+                  }
+                  onStartCall(getDisplayName(activeFriend.name, activeFriend.connect_id), 'audio', activeFriend.user_id, activeFriend.connect_id);
+                }}
                 title="Voice call"
                 className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-blue-50 text-slate-600 hover:text-blue-600 transition-colors cursor-pointer"
               >
@@ -2474,7 +2854,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       type="button"
                       onClick={() => {
                         setIsChatMenuOpen(false);
-                        onStartCall(getDisplayName(activeFriend.name, activeFriend.connect_id), 'video', activeFriend.user_id, activeFriend.connect_id);
+                        if (isBlocked) {
+                          onShowToast('Unblock this contact before calling');
+                          return;
+                        }
+                        onStartCall(getDisplayName(activeFriend.name, activeFriend.connect_id), 'group', activeFriend.user_id, activeFriend.connect_id);
                       }}
                       className="w-full px-4 py-2.5 text-xs font-medium flex items-center gap-3.5 hover:bg-slate-100 hover:text-slate-900 transition-colors text-left cursor-pointer"
                     >
@@ -2625,11 +3009,24 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 <button
                   type="button"
                   disabled={selectedMsgIds.size === 0}
-                  onClick={() => {
+                  onClick={async () => {
+                    const ids = Array.from(selectedMsgIds);
+                    markMessagesDeleted(ids);
                     setMessages(prev => prev.filter(m => !selectedMsgIds.has(m.id)));
-                    onShowToast(`${selectedMsgIds.size} messages deleted`);
+                    onShowToast(`${ids.length} messages deleted`);
                     setIsSelectMode(false);
                     setSelectedMsgIds(new Set());
+                    try {
+                      await fetch(`${API_BASE_URL}/api/v1/messages/delete`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          conversation_id: activeFriend?.conversation_id,
+                          message_ids: ids,
+                          user_id: user?.id,
+                        }),
+                      });
+                    } catch {}
                   }}
                   className="p-2 rounded-xl hover:bg-rose-500 transition-colors disabled:opacity-40 cursor-pointer"
                   title="Delete selected"
@@ -2829,7 +3226,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                       {/* Regular Text & Timestamp straight horizontally inline */}
                       <div className="flex flex-wrap items-end justify-between gap-x-3 gap-y-0.5 leading-relaxed">
                         {m.content && (!m.file_url || (!m.content.startsWith('Shared file:') && m.content !== '🎤 Voice note')) ? (
-                          <span className="break-words select-text font-normal">{m.content}</span>
+                          <span className="min-w-0 max-w-full [overflow-wrap:anywhere] break-words select-text font-normal">{m.content}</span>
                         ) : (
                           <span />
                         )}
@@ -3561,14 +3958,24 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({ onStartCall, onShowT
                 <label
                   key={opt}
                   className="flex items-center justify-between p-2.5 rounded-xl hover:bg-slate-50 cursor-pointer font-medium text-slate-700"
-                  onClick={() => setDisappearingOption(opt)}
+                  onClick={() => {
+                    setDisappearingOption(opt);
+                    if (activeFriend?.conversation_id) {
+                      try { localStorage.setItem(`vertex_disappearing_${activeFriend.conversation_id}`, opt); } catch {}
+                    }
+                  }}
                 >
                   <span className="capitalize">{opt === 'off' ? 'Off' : opt === '24h' ? '24 hours' : opt === '7d' ? '7 days' : '90 days'}</span>
                   <input
                     type="radio"
                     name="disappearing"
                     checked={disappearingOption === opt}
-                    onChange={() => setDisappearingOption(opt)}
+                    onChange={() => {
+                      setDisappearingOption(opt);
+                      if (activeFriend?.conversation_id) {
+                        try { localStorage.setItem(`vertex_disappearing_${activeFriend.conversation_id}`, opt); } catch {}
+                      }
+                    }}
                     className="accent-blue-600"
                   />
                 </label>

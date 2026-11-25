@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Users, ShieldCheck, MicOff, Radio, Link2 } from 'lucide-react';
 import { CallControls } from './CallControls';
 
@@ -11,12 +11,82 @@ export interface ParticipantInfo {
   videoTrack?: any;
 }
 
+const ParticipantVideoTile: React.FC<{
+  track?: any;
+  isLocal?: boolean;
+  isVideoOff?: boolean;
+  initials: string;
+  label: string;
+  isMuted?: boolean;
+  isSpeaking?: boolean;
+}> = ({ track, isLocal, isVideoOff, initials, label, isMuted, isSpeaking }) => {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (track && el && !isVideoOff) {
+      try {
+        track.attach(el);
+      } catch {}
+      return () => {
+        try {
+          track.detach(el);
+        } catch {}
+      };
+    }
+  }, [track, isVideoOff]);
+
+  return (
+    <div
+      className={`relative rounded-2xl overflow-hidden bg-[#0d1438] border-2 transition-all flex items-center justify-center min-h-[180px] ${
+        isSpeaking
+          ? 'border-emerald-400 ring-4 ring-emerald-400/30 shadow-lg shadow-emerald-400/20'
+          : isLocal && !isMuted
+          ? 'border-emerald-500/70'
+          : 'border-white/10'
+      }`}
+    >
+      {track && !isVideoOff ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={isLocal}
+          className={`w-full h-full object-cover ${isLocal ? 'transform -scale-x-100' : ''}`}
+        />
+      ) : (
+        <div
+          className={`w-20 h-20 rounded-full flex items-center justify-center text-white text-2xl font-bold shadow-xl ${
+            isLocal
+              ? 'bg-gradient-to-tr from-blue-600 to-indigo-600'
+              : 'bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-500'
+          }`}
+        >
+          {initials}
+        </div>
+      )}
+
+      <div className="absolute bottom-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur-md text-xs font-semibold">
+        <span>{label}</span>
+        {isMuted && <MicOff className="w-3 h-3 text-rose-400" />}
+      </div>
+
+      {isSpeaking && (
+        <span className="absolute top-3 right-3 flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500 text-slate-900 shadow-sm animate-pulse">
+          <Radio className="w-2.5 h-2.5" /> Speaking
+        </span>
+      )}
+    </div>
+  );
+};
+
 interface GroupCallProps {
   roomTitle: string;
   roomName: string;
   durationSeconds: number;
   participants: ParticipantInfo[];
   currentUserName: string;
+  localVideoTrack?: any;
   isMuted: boolean;
   isVideoOn: boolean;
   isScreenSharing: boolean;
@@ -37,6 +107,7 @@ export const GroupCall: React.FC<GroupCallProps> = ({
   durationSeconds,
   participants,
   currentUserName,
+  localVideoTrack,
   isMuted,
   isVideoOn,
   isScreenSharing,
@@ -56,9 +127,8 @@ export const GroupCall: React.FC<GroupCallProps> = ({
     return `${m}:${s}`;
   };
 
-  const totalCount = participants.length + 1; // remote participants + me
+  const totalCount = participants.length + 1;
 
-  // Determine grid layout classes
   const getGridClass = () => {
     if (hasScreenShare) return 'grid-cols-1';
     if (totalCount <= 2) return 'grid-cols-1 sm:grid-cols-2';
@@ -118,51 +188,28 @@ export const GroupCall: React.FC<GroupCallProps> = ({
           </div>
         ) : (
           <div className={`grid ${getGridClass()} gap-3 w-full h-full auto-rows-fr`}>
-            {/* 1. Local Participant Card (Me) */}
-            <div
-              className={`relative rounded-2xl overflow-hidden bg-[#0d1438] border-2 transition-all flex items-center justify-center ${
-                !isMuted ? 'border-emerald-500/80 shadow-lg shadow-emerald-500/10' : 'border-white/10'
-              }`}
-            >
-              <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white text-2xl font-bold shadow-xl">
-                {currentUserName.slice(0, 2).toUpperCase()}
-              </div>
+            {/* Local Participant Video Tile */}
+            <ParticipantVideoTile
+              track={localVideoTrack}
+              isLocal
+              isVideoOff={!isVideoOn}
+              initials={currentUserName.slice(0, 2).toUpperCase()}
+              label={`${currentUserName} (You)`}
+              isMuted={isMuted}
+            />
 
-              <div className="absolute bottom-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur-md text-xs font-semibold">
-                <span>{currentUserName} (You)</span>
-                {isMuted && <MicOff className="w-3 h-3 text-rose-400" />}
-              </div>
-            </div>
-
-            {/* 2. Remote Participants */}
-            {participants.map((p) => {
-              const pInitials = (p.name || p.identity || 'U').slice(0, 2).toUpperCase();
-              return (
-                <div
-                  key={p.identity}
-                  className={`relative rounded-2xl overflow-hidden bg-[#0d1438] border-2 transition-all flex items-center justify-center ${
-                    p.isSpeaking
-                      ? 'border-emerald-400 ring-4 ring-emerald-400/30 shadow-lg shadow-emerald-400/20'
-                      : 'border-white/10'
-                  }`}
-                >
-                  <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-500 flex items-center justify-center text-white text-2xl font-bold shadow-xl">
-                    {pInitials}
-                  </div>
-
-                  <div className="absolute bottom-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur-md text-xs font-semibold">
-                    <span>{p.name || p.identity}</span>
-                    {p.isAudioMuted && <MicOff className="w-3 h-3 text-rose-400" />}
-                  </div>
-
-                  {p.isSpeaking && (
-                    <span className="absolute top-3 right-3 flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500 text-slate-900 shadow-sm animate-pulse">
-                      <Radio className="w-2.5 h-2.5" /> Speaking
-                    </span>
-                  )}
-                </div>
-              );
-            })}
+            {/* Remote Participants Video Tiles */}
+            {participants.map((p) => (
+              <ParticipantVideoTile
+                key={p.identity}
+                track={p.videoTrack}
+                isVideoOff={p.isVideoOff}
+                initials={(p.name || p.identity || 'U').slice(0, 2).toUpperCase()}
+                label={p.name || p.identity}
+                isMuted={p.isAudioMuted}
+                isSpeaking={p.isSpeaking}
+              />
+            ))}
           </div>
         )}
       </div>

@@ -103,7 +103,7 @@ export const OutgoingCallScreen: React.FC<OutgoingCallScreenProps> = ({
         </button>
 
         {/* Video Toggle (if video call) */}
-        {callType !== 'voice' && (
+        {callType !== 'voice' && callType !== 'audio' && (
           <button
             type="button"
             onClick={onToggleVideo}

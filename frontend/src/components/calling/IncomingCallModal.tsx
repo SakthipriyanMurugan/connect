@@ -14,7 +14,7 @@ export interface IncomingCallData {
 interface IncomingCallModalProps {
   call: IncomingCallData;
   onAccept: () => void;
-  onDecline: () => void;
+  onDecline: (isTimeout?: boolean) => void;
 }
 
 export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
@@ -28,7 +28,7 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
     // 35-Second Auto Missed-Call Timeout
     const autoTimeout = setTimeout(() => {
       stopRingtone();
-      onDecline();
+      onDecline(true);
     }, 35000);
 
     return () => {
@@ -44,7 +44,7 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
 
   const handleDecline = () => {
     stopRingtone();
-    onDecline();
+    onDecline(false);
   };
 
   return (
