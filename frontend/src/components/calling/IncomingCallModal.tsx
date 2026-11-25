@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Phone, PhoneOff, Video } from 'lucide-react';
 import { playRingtone, stopRingtone } from '../../services/livekit';
 
@@ -8,7 +8,7 @@ export interface IncomingCallData {
   caller_connect_id?: string;
   caller_avatar?: string;
   room_name: string;
-  call_type: 'video' | 'audio' | 'voice';
+  call_type: 'video' | 'audio' | 'voice' | 'group';
 }
 
 interface IncomingCallModalProps {
@@ -22,11 +22,15 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
   onAccept,
   onDecline,
 }) => {
+  const respondedRef = useRef(false);
+
   useEffect(() => {
     playRingtone();
 
     // 35-Second Auto Missed-Call Timeout
     const autoTimeout = setTimeout(() => {
+      if (respondedRef.current) return;
+      respondedRef.current = true;
       stopRingtone();
       onDecline(true);
     }, 35000);
@@ -38,11 +42,15 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
   }, []);
 
   const handleAccept = () => {
+    if (respondedRef.current) return;
+    respondedRef.current = true;
     stopRingtone();
     onAccept();
   };
 
   const handleDecline = () => {
+    if (respondedRef.current) return;
+    respondedRef.current = true;
     stopRingtone();
     onDecline(false);
   };
@@ -67,12 +75,12 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
           <p className="text-xs font-semibold text-[#8cf4ff] mb-2">@{call.caller_connect_id}</p>
         )}
         <p className="text-xs text-[#b6c5dd] mb-6 flex items-center justify-center gap-1.5 font-medium">
-          {call.call_type === 'video' ? (
+          {call.call_type === 'video' || call.call_type === 'group' ? (
             <Video className="w-3.5 h-3.5 text-[#8cf4ff]" />
           ) : (
             <Phone className="w-3.5 h-3.5 text-[#12a878]" />
           )}
-          Incoming {call.call_type === 'video' ? 'Video' : 'Voice'} Call…
+          Incoming {call.call_type === 'group' ? 'Group' : call.call_type === 'video' ? 'Video' : 'Voice'} Call…
         </p>
 
         {/* Action Buttons */}

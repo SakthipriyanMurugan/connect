@@ -9,7 +9,7 @@ self.addEventListener('activate', (event) => {
 
 // Handle incoming push messages
 self.addEventListener('push', (event) => {
-  let data = { title: 'VERTEX CONNECT', body: 'New notification', icon: '/favicon.ico' };
+  let data = { title: 'VERTEX CONNECT', body: 'New notification', icon: '/favicon.svg' };
   if (event.data) {
     try {
       data = event.data.json();
@@ -20,8 +20,8 @@ self.addEventListener('push', (event) => {
 
   const options = {
     body: data.body,
-    icon: data.icon || '/favicon.ico',
-    badge: '/favicon.ico',
+    icon: data.icon || '/favicon.svg',
+    badge: '/favicon.svg',
     vibrate: [200, 100, 200],
     data: data.data || {},
     actions: data.actions || []

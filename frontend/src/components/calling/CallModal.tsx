@@ -98,6 +98,7 @@ export const CallModal: React.FC<CallModalProps> = ({
   const timeoutRef = useRef<any>(null);
   const isConnectedRef = useRef(isConnected);
   isConnectedRef.current = isConnected;
+  const userMutedRef = useRef(false);
 
   // Sync live state to minimized CallBar
   useEffect(() => {
@@ -215,6 +216,20 @@ export const CallModal: React.FC<CallModalProps> = ({
     }
   }, [isRinging, session.isIncoming, session.targetUserId]);
 
+  // Enable microphone ONLY once connected (prevents sending audio while ringing outgoing call!)
+  useEffect(() => {
+    if (!room || !isConnected || userMutedRef.current) return;
+    room.localParticipant
+      .setMicrophoneEnabled(true, {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 2,
+        sampleRate: 48000,
+      })
+      .catch(() => {});
+  }, [room, isConnected]);
+
   // Duration Timer (ONLY starts once connected, not while ringing!)
   useEffect(() => {
     if (!isConnected) return;
@@ -222,10 +237,11 @@ export const CallModal: React.FC<CallModalProps> = ({
     return () => clearInterval(timer);
   }, [isConnected]);
 
-  // Sync Remote Participants List (uses remoteParticipants.size + 1 so 1-on-1 stays 2!)
+  // Sync Remote Participants List (excludes same user identity so multiple tabs never falsely trigger answer!)
   const syncParticipants = (activeRoom: Room) => {
     const list: ParticipantInfo[] = [];
     activeRoom.remoteParticipants.forEach((p) => {
+      if (p.identity === currentUser.id) return;
       const camPub = p.getTrackPublication(Track.Source.Camera);
       list.push({
         identity: p.identity,
@@ -237,7 +253,7 @@ export const CallModal: React.FC<CallModalProps> = ({
       });
     });
     setParticipantsList(list);
-    setParticipantCount(activeRoom.remoteParticipants.size + 1);
+    setParticipantCount(list.length + 1);
   };
 
   // Connect to LiveKit Room
@@ -336,6 +352,7 @@ export const CallModal: React.FC<CallModalProps> = ({
         newRoom.on(RoomEvent.TrackUnmuted, () => syncParticipants(newRoom));
 
         newRoom.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => {
+          if (p.identity === currentUser.id) return;
           syncParticipants(newRoom);
           setRemoteName(p.name || p.identity);
           setAcceptedByCallee(true);
@@ -343,6 +360,7 @@ export const CallModal: React.FC<CallModalProps> = ({
         });
 
         newRoom.on(RoomEvent.ParticipantDisconnected, (p: RemoteParticipant) => {
+          if (p.identity === currentUser.id) return;
           syncParticipants(newRoom);
           onShowToast(`${p.name || 'Participant'} left the call`);
         });
@@ -355,8 +373,10 @@ export const CallModal: React.FC<CallModalProps> = ({
         setIsConnecting(false);
         setConnectionStateLabel('Connected');
 
-        // Scan existing tracks
+        // Scan existing tracks (ignoring self identity; if real remote already present, mark connected)
         for (const p of newRoom.remoteParticipants.values()) {
+          if (p.identity === currentUser.id) continue;
+          setAcceptedByCallee(true);
           setRemoteName(p.name || p.identity);
           for (const pub of p.trackPublications.values()) {
             if (pub.isSubscribed && pub.track) {
@@ -379,17 +399,19 @@ export const CallModal: React.FC<CallModalProps> = ({
         }
         syncParticipants(newRoom);
 
-        // Enable microphone
-        try {
-          await newRoom.localParticipant.setMicrophoneEnabled(true, {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-            channelCount: 2,
-            sampleRate: 48000,
-          });
-        } catch (e) {
-          console.warn('Microphone permission:', e);
+        // Enable microphone immediately ONLY if already connected (incoming accept or open meeting); otherwise hold until answered
+        if (isConnectedRef.current && !userMutedRef.current) {
+          try {
+            await newRoom.localParticipant.setMicrophoneEnabled(true, {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              channelCount: 2,
+              sampleRate: 48000,
+            });
+          } catch (e) {
+            console.warn('Microphone permission:', e);
+          }
         }
 
         // Enable camera ONLY if video / group call
@@ -431,13 +453,16 @@ export const CallModal: React.FC<CallModalProps> = ({
     if (!room) return;
     try {
       const nextMuted = !isMuted;
-      await room.localParticipant.setMicrophoneEnabled(!nextMuted, {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 2,
-        sampleRate: 48000,
-      });
+      userMutedRef.current = nextMuted;
+      if (isConnectedRef.current || nextMuted) {
+        await room.localParticipant.setMicrophoneEnabled(!nextMuted, {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 2,
+          sampleRate: 48000,
+        });
+      }
       setIsMuted(nextMuted);
       onShowToast(nextMuted ? 'Microphone muted' : 'Microphone unmuted');
     } catch (e: any) {
@@ -568,7 +593,7 @@ export const CallModal: React.FC<CallModalProps> = ({
         }
       >
         <div className="relative w-full max-w-5xl h-full sm:h-[88vh] sm:max-h-[850px] rounded-none sm:rounded-3xl bg-[#070a1e] border-0 sm:border border-white/20 text-white shadow-2xl flex flex-col overflow-hidden backdrop-blur-3xl">
-          {isConnecting && (
+          {isConnecting && !isRinging && (
             <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 px-3 py-1 rounded-full bg-black/70 border border-white/15 text-[11px] font-semibold text-blue-300">
               {connectionStateLabel}
             </div>

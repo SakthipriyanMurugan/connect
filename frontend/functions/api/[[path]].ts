@@ -120,6 +120,12 @@ async function ensureSchema(db?: D1Database) {
     `CREATE TABLE IF NOT EXISTS call_events (id TEXT PRIMARY KEY, call_id TEXT NOT NULL, event_type TEXT NOT NULL, user_id TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
     `CREATE TABLE IF NOT EXISTS user_call_settings (id TEXT PRIMARY KEY, user_id TEXT UNIQUE NOT NULL, allow_voice_calls INTEGER DEFAULT 1, allow_video_calls INTEGER DEFAULT 1, notification_enabled INTEGER DEFAULT 1, privacy_settings TEXT DEFAULT '{}');`,
     `CREATE TABLE IF NOT EXISTS call_notifications (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, call_id TEXT NOT NULL, notification_type TEXT NOT NULL, is_read INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
+    `CREATE TABLE IF NOT EXISTS realtime_signals (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, signal_type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);`,
+    `CREATE INDEX IF NOT EXISTS idx_realtime_signals_user ON realtime_signals(user_id, created_at);`,
+    `CREATE TABLE IF NOT EXISTS typing_status (target_user_id TEXT NOT NULL, from_user_id TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(target_user_id, from_user_id));`,
+    `CREATE TABLE IF NOT EXISTS active_call_locks (user_id TEXT PRIMARY KEY, call_id TEXT NOT NULL, call_status TEXT NOT NULL, expires_at TEXT NOT NULL);`,
+    `CREATE TABLE IF NOT EXISTS conversation_meta (conversation_id TEXT PRIMARY KEY, cleared_at TEXT);`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_conv_created ON messages(conversation_id, created_at);`,
   ];
   for (const s of stmts) {
     try {
@@ -130,6 +136,7 @@ async function ensureSchema(db?: D1Database) {
     `ALTER TABLE messages ADD COLUMN reply_to_id TEXT;`,
     `ALTER TABLE messages ADD COLUMN reply_to_snippet TEXT;`,
     `ALTER TABLE messages ADD COLUMN reactions TEXT DEFAULT '{}';`,
+    `ALTER TABLE messages ADD COLUMN is_deleted INTEGER DEFAULT 0;`,
     `ALTER TABLE meeting_intelligence ADD COLUMN status TEXT DEFAULT 'pending';`,
     `ALTER TABLE meeting_intelligence ADD COLUMN supervisor_notes TEXT DEFAULT '';`,
   ];
@@ -140,21 +147,55 @@ async function ensureSchema(db?: D1Database) {
   }
 }
 
-async function pushSignal(kv: KVNamespace | undefined, targetUserId: string | undefined, signal: any) {
-  if (!kv || !targetUserId) return;
-  try {
-    const key = `signals:${targetUserId}`;
-    const raw = await kv.get(key);
-    const list: any[] = raw ? JSON.parse(raw) : [];
-    const now = Date.now();
-    const fresh = list.filter((item) => now - (item._ts || 0) < 60000);
-    fresh.push({ ...signal, _ts: now, _id: crypto.randomUUID() });
-    await kv.put(key, JSON.stringify(fresh), { expirationTtl: 120 });
-  } catch {}
+function parseDirectPartnerId(conversationId?: string | null, actorId?: string | null): string | null {
+  if (!conversationId || !actorId || !conversationId.startsWith("direct_")) return null;
+  const prefix = `direct_${actorId}_`;
+  if (conversationId.startsWith(prefix)) return conversationId.slice(prefix.length) || null;
+  const suffix = `_${actorId}`;
+  if (conversationId.endsWith(suffix)) {
+    const mid = conversationId.slice("direct_".length, -suffix.length);
+    return mid || null;
+  }
+  return null;
+}
+
+async function pushSignal(env: Env, targetUserId: string | undefined | null, signal: any) {
+  if (!targetUserId) return;
+  const id = crypto.randomUUID();
+  const nowIso = new Date().toISOString();
+  const fullSignal = { ...signal, _ts: Date.now(), _id: id };
+
+  if (env.DB) {
+    try {
+      await env.DB.prepare(
+        "INSERT INTO realtime_signals (id, user_id, signal_type, payload, created_at) VALUES (?, ?, ?, ?, ?)"
+      ).bind(id, targetUserId, String(signal?.type || "event"), JSON.stringify(fullSignal), nowIso).run();
+      return;
+    } catch (e: any) {
+      console.warn("D1 signal push notice:", e?.message);
+    }
+  }
+
+  if (env.KV) {
+    try {
+      const key = `signals:${targetUserId}`;
+      const raw = await env.KV.get(key);
+      const list: any[] = raw ? JSON.parse(raw) : [];
+      const now = Date.now();
+      const fresh = list.filter((item) => now - (item._ts || 0) < 60000);
+      fresh.push(fullSignal);
+      await env.KV.put(key, JSON.stringify(fresh), { expirationTtl: 120 });
+    } catch {}
+  }
 }
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
+  const runBg = (p: Promise<any>) => {
+    try {
+      context.waitUntil(p.catch(() => {}));
+    } catch {}
+  };
 
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -727,16 +768,18 @@ export const onRequest: PagesFunction<Env> = async (context) => {
             await env.KV.put(`conn:${requesterId}:${targetUser.id}`, JSON.stringify(record));
             await env.KV.put(`conn:${targetUser.id}:${requesterId}`, JSON.stringify(record));
             await env.KV.put(`conn_id:${connId}`, JSON.stringify(record));
-            await pushSignal(env.KV, targetUser.id, {
-              type: "connection_request",
-              connection_id: connId,
-              from_user_id: requesterId,
-              message: `@${requesterUser?.connect_id || "Someone"} sent you a connection request!`,
-            });
           } catch (e: any) {
             console.warn("KV put notice:", e?.message);
           }
         }
+        await pushSignal(env, targetUser.id, {
+          type: "connection_request",
+          connection_id: connId,
+          from_user_id: requesterId,
+          from_name: formatDisplayName(requesterUser?.name, requesterUser?.connect_id),
+          from_connect_id: requesterUser?.connect_id || "",
+          message: `@${requesterUser?.connect_id || "Someone"} sent you a connection request!`,
+        });
 
         if (env.DB) {
           try {
@@ -796,12 +839,15 @@ export const onRequest: PagesFunction<Env> = async (context) => {
               await env.KV.put(`conn_id:${connId}`, JSON.stringify(rec));
               await env.KV.put(`conn:${rec.requester_id}:${rec.receiver_id}`, JSON.stringify(rec));
               await env.KV.put(`conn:${rec.receiver_id}:${rec.requester_id}`, JSON.stringify(rec));
-              await pushSignal(env.KV, rec.requester_id, {
-                type: "connection_accepted",
-                connection_id: connId,
-                message: "Connection request accepted! You can now chat.",
-              });
             } catch {}
+          }
+          if (rec?.requester_id) {
+            await pushSignal(env, rec.requester_id, {
+              type: "connection_accepted",
+              connection_id: connId,
+              from_name: rec.receiver_name || "",
+              message: "Connection request accepted! You can now chat.",
+            });
           }
 
           if (env.DB) {
@@ -892,6 +938,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           }
           if (conversation_id) {
             try {
+              await env.DB.prepare("INSERT OR REPLACE INTO conversation_meta (conversation_id, cleared_at) VALUES (?, ?)").bind(conversation_id, now).run();
               await env.DB.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(conversation_id).run();
             } catch {}
           }
@@ -902,115 +949,88 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       }
     }
 
-    // 12. Messages History (Native D1 + KV Overlay + Reactions + Read Receipts + Tombstones)
+    // 12. Messages History (Ultra-Fast Single-Query D1 — Zero KV N+1 Subrequest Limits!)
     if (url.pathname.startsWith("/api/v1/messages/") && request.method === "GET") {
-      const conversationId = url.pathname.replace("/api/v1/messages/", "");
-      if (conversationId) {
+      const conversationId = decodeURIComponent(url.pathname.replace("/api/v1/messages/", ""));
+      const afterTs = url.searchParams.get("after") || "";
+      if (conversationId && env.DB) {
         try {
-          const msgMap: Record<string, any> = {};
-
-          let clearedAt: string | null = null;
-          let deletedIds = new Set<string>();
-          const readReceiptsByReader: Record<string, number> = {};
-
-          if (env.KV) {
-            try {
-              clearedAt = await env.KV.get(`cleared:${conversationId}`);
-              const delRaw = await env.KV.get(`deleted_msgs:${conversationId}`);
-              if (delRaw) deletedIds = new Set(JSON.parse(delRaw));
-              const rrList = await env.KV.list({ prefix: `read_receipt:${conversationId}:` });
-              for (const rk of rrList.keys || []) {
-                const readerId = rk.name.replace(`read_receipt:${conversationId}:`, "");
-                const ts = await env.KV.get(rk.name);
-                if (ts) readReceiptsByReader[readerId] = new Date(ts).getTime();
-              }
-            } catch {}
-          }
-          const clearedTime = clearedAt ? new Date(clearedAt).getTime() : 0;
-
-          if (env.DB) {
-            try {
-              const sql = `
+          let rows: any[] = [];
+          try {
+            const sql = afterTs
+              ? `
                 SELECT id, workspace_id, conversation_id, sender_id, sender_name, receiver_id,
                        content, file_url, file_name, file_size, file_type, reply_to_id, reply_to_snippet, reactions, is_read, created_at
                 FROM messages
                 WHERE conversation_id = ?
-                ORDER BY created_at ASC
-                LIMIT 200;
+                  AND COALESCE(is_deleted, 0) = 0
+                  AND created_at > ?
+                  AND created_at > COALESCE((SELECT cleared_at FROM conversation_meta WHERE conversation_id = ?), '')
+                ORDER BY created_at DESC
+                LIMIT 120;
+              `
+              : `
+                SELECT id, workspace_id, conversation_id, sender_id, sender_name, receiver_id,
+                       content, file_url, file_name, file_size, file_type, reply_to_id, reply_to_snippet, reactions, is_read, created_at
+                FROM messages
+                WHERE conversation_id = ?
+                  AND COALESCE(is_deleted, 0) = 0
+                  AND created_at > COALESCE((SELECT cleared_at FROM conversation_meta WHERE conversation_id = ?), '')
+                ORDER BY created_at DESC
+                LIMIT 120;
               `;
-              const { results } = await env.DB.prepare(sql).bind(conversationId).all();
-              for (const m of results || []) {
-                if (deletedIds.has(m.id as string)) continue;
-                if (clearedTime && new Date(m.created_at as string).getTime() <= clearedTime) continue;
-                let parsedReactions = {};
-                if (typeof m.reactions === "string" && m.reactions) {
-                  try {
-                    parsedReactions = JSON.parse(m.reactions);
-                  } catch {}
-                }
-                msgMap[m.id as string] = {
-                  ...m,
-                  reactions: parsedReactions,
-                  is_read: Boolean(m.is_read),
-                };
-              }
-            } catch {}
+            const stmt = afterTs
+              ? env.DB.prepare(sql).bind(conversationId, afterTs, conversationId)
+              : env.DB.prepare(sql).bind(conversationId, conversationId);
+            const { results } = await stmt.all();
+            rows = (results || []).reverse();
+          } catch {
+            const { results } = await env.DB.prepare(
+              `SELECT id, workspace_id, conversation_id, sender_id, sender_name, receiver_id,
+                      content, file_url, file_name, file_size, file_type, is_read, created_at
+               FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 120;`
+            ).bind(conversationId).all();
+            rows = (results || []).reverse();
           }
 
-          if (env.KV) {
-            try {
-              const kvList = await env.KV.list({ prefix: `msg:${conversationId}:` });
-              for (const k of kvList.keys || []) {
-                const valStr = await env.KV.get(k.name);
-                if (valStr) {
-                  const m = JSON.parse(valStr);
-                  if (deletedIds.has(m.id)) continue;
-                  if (clearedTime && new Date(m.created_at).getTime() <= clearedTime) continue;
-                  msgMap[m.id] = { ...(msgMap[m.id] || {}), ...m };
-                }
-              }
-
-              // Overlay live reactions & read receipts
-              for (const m of Object.values(msgMap)) {
-                const rStr = await env.KV.get(`msg_react:${m.id}`);
-                if (rStr) {
-                  try {
-                    m.reactions = JSON.parse(rStr);
-                  } catch {}
-                }
-                const msgTs = new Date(m.created_at).getTime();
-                for (const [readerId, readTs] of Object.entries(readReceiptsByReader)) {
-                  if (readerId !== m.sender_id && msgTs <= readTs) {
-                    m.is_read = true;
-                  }
-                }
-              }
-            } catch {}
-          }
-
-          const formatted = Object.values(msgMap).sort(
-            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-          );
+          const formatted = rows.map((m: any) => {
+            let parsedReactions = {};
+            if (typeof m.reactions === "string" && m.reactions) {
+              try {
+                parsedReactions = JSON.parse(m.reactions);
+              } catch {}
+            }
+            return {
+              ...m,
+              reply_to_id: m.reply_to_id || null,
+              reply_to_snippet: m.reply_to_snippet || null,
+              reactions: parsedReactions,
+              is_read: Boolean(m.is_read),
+            };
+          });
           return jsonResponse(formatted);
         } catch {
           return jsonResponse([]);
         }
       }
+      return jsonResponse([]);
     }
 
-    // 13. Send Message (KV + D1 Persistence with Reply Quotes)
+    // 13. Send Message (Strongly-Consistent D1 + Instant Real-Time Push Signal)
     if (url.pathname === "/api/v1/messages/send" && request.method === "POST") {
       const body = await getBody();
       if (body.conversation_id && body.sender_id) {
         const mid = crypto.randomUUID();
         const now = new Date().toISOString();
+        const targetReceiverId =
+          body.receiver_id || parseDirectPartnerId(body.conversation_id, body.sender_id);
         const msgObj = {
           id: mid,
           workspace_id: "ws-1",
           conversation_id: body.conversation_id,
           sender_id: body.sender_id,
           sender_name: body.sender_name || "User",
-          receiver_id: body.receiver_id || null,
+          receiver_id: targetReceiverId,
           content: body.content || "",
           file_url: body.file_url || null,
           file_name: body.file_name || null,
@@ -1020,25 +1040,20 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           reply_to_snippet: body.reply_to_snippet || null,
           reactions: {},
           is_read: false,
+          status: "delivered",
           created_at: now,
         };
-
-        if (env.KV) {
-          try {
-            await env.KV.put(`msg:${body.conversation_id}:${now}_${mid}`, JSON.stringify(msgObj));
-          } catch {}
-        }
 
         if (env.DB) {
           try {
             await env.DB.prepare(
-              "INSERT INTO messages (id, workspace_id, conversation_id, sender_id, sender_name, receiver_id, content, file_url, file_name, file_size, file_type, reply_to_id, reply_to_snippet, reactions, is_read, created_at) VALUES (?, 'ws-1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?)"
+              "INSERT INTO messages (id, workspace_id, conversation_id, sender_id, sender_name, receiver_id, content, file_url, file_name, file_size, file_type, reply_to_id, reply_to_snippet, reactions, is_read, is_deleted, created_at) VALUES (?, 'ws-1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, 0, ?)"
             ).bind(
               mid,
               body.conversation_id,
               body.sender_id,
               body.sender_name || "User",
-              body.receiver_id || null,
+              targetReceiverId,
               body.content || "",
               body.file_url || null,
               body.file_name || null,
@@ -1057,7 +1072,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
                 body.conversation_id,
                 body.sender_id,
                 body.sender_name || "User",
-                body.receiver_id || null,
+                targetReceiverId,
                 body.content || "",
                 body.file_url || null,
                 body.file_name || null,
@@ -1067,6 +1082,35 @@ export const onRequest: PagesFunction<Env> = async (context) => {
               ).run();
             } catch {}
           }
+
+          // Push instant real-time signal to recipient(s) so messages arrive in < 0.7s!
+          if (String(body.conversation_id).startsWith("group_")) {
+            runBg((async () => {
+              const gRow = await env.DB.prepare("SELECT members, created_by FROM groups WHERE id = ?")
+                .bind(body.conversation_id).first().catch(() => null);
+              const members: string[] = gRow?.members ? JSON.parse(String(gRow.members)) : [];
+              if (gRow?.created_by && !members.includes(String(gRow.created_by))) {
+                members.push(String(gRow.created_by));
+              }
+              await Promise.allSettled(
+                members
+                  .filter((uid) => uid && uid !== body.sender_id)
+                  .map((uid) =>
+                    pushSignal(env, uid, {
+                      type: "new_message",
+                      conversation_id: body.conversation_id,
+                      message: msgObj,
+                    })
+                  )
+              );
+            })());
+          } else if (targetReceiverId && targetReceiverId !== body.sender_id) {
+            await pushSignal(env, targetReceiverId, {
+              type: "new_message",
+              conversation_id: body.conversation_id,
+              message: msgObj,
+            });
+          }
         }
 
         return jsonResponse({ success: true, message: msgObj });
@@ -1074,29 +1118,30 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       return jsonResponse({ detail: "Missing message fields" }, 400);
     }
 
-    // 14. Mark Messages Read (Per-Reader Cursor in KV + D1)
+    // 14. Mark Messages Read (Strongly-Consistent D1 + Instant Blue-Tick Signal)
     if (url.pathname === "/api/v1/messages/read" && request.method === "POST") {
       try {
         const body = await getBody();
         const { conversation_id, reader_id } = body || {};
-        if (conversation_id) {
-          const now = new Date().toISOString();
-          if (env.KV && reader_id) {
-            try {
-              await env.KV.put(`read_receipt:${conversation_id}:${reader_id}`, now);
-            } catch {}
-          }
-          if (env.DB) {
-            try {
-              if (reader_id) {
-                await env.DB.prepare(
-                  "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND (receiver_id = ? OR sender_id != ?)"
-                ).bind(conversation_id, reader_id, reader_id).run();
-              } else {
-                await env.DB.prepare("UPDATE messages SET is_read = 1 WHERE conversation_id = ?").bind(conversation_id).run();
+        if (conversation_id && env.DB) {
+          try {
+            if (reader_id) {
+              await env.DB.prepare(
+                "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND is_read = 0 AND (receiver_id = ? OR sender_id != ?)"
+              ).bind(conversation_id, reader_id, reader_id).run();
+
+              const partnerId = parseDirectPartnerId(conversation_id, reader_id);
+              if (partnerId) {
+                runBg(pushSignal(env, partnerId, {
+                  type: "messages_read",
+                  conversation_id,
+                  reader_id,
+                }));
               }
-            } catch {}
-          }
+            } else {
+              await env.DB.prepare("UPDATE messages SET is_read = 1 WHERE conversation_id = ?").bind(conversation_id).run();
+            }
+          } catch {}
         }
       } catch {}
       return jsonResponse({ success: true });
@@ -1107,22 +1152,12 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       try {
         const body = await getBody();
         const conversationId = body?.conversation_id;
-        if (conversationId) {
+        if (conversationId && env.DB) {
           const now = new Date().toISOString();
-          if (env.KV) {
-            try {
-              await env.KV.put(`cleared:${conversationId}`, now);
-              const kvList = await env.KV.list({ prefix: `msg:${conversationId}:` });
-              for (const k of kvList.keys || []) {
-                await env.KV.delete(k.name);
-              }
-            } catch {}
-          }
-          if (env.DB) {
-            try {
-              await env.DB.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(conversationId).run();
-            } catch {}
-          }
+          try {
+            await env.DB.prepare("INSERT OR REPLACE INTO conversation_meta (conversation_id, cleared_at) VALUES (?, ?)").bind(conversationId, now).run();
+            await env.DB.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(conversationId).run();
+          } catch {}
         }
         return jsonResponse({ success: true, message: "Chat messages cleared" });
       } catch {
@@ -1130,30 +1165,31 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       }
     }
 
-    // 14c. Delete Specific Messages (Persists across refresh & polling)
+    // 14c. Delete Specific Messages (Persists across refresh & syncs to partner)
     if (url.pathname === "/api/v1/messages/delete" && request.method === "POST") {
       try {
         const body = await getBody();
-        const { conversation_id, message_id, message_ids } = body || {};
+        const { conversation_id, message_id, message_ids, user_id } = body || {};
         const ids: string[] = Array.isArray(message_ids) ? [...message_ids] : [];
         if (message_id && !ids.includes(message_id)) ids.push(message_id);
 
-        if (ids.length > 0) {
-          if (env.KV && conversation_id) {
+        if (ids.length > 0 && env.DB) {
+          for (const mid of ids) {
             try {
-              const delKey = `deleted_msgs:${conversation_id}`;
-              const prevRaw = await env.KV.get(delKey);
-              const prev: string[] = prevRaw ? JSON.parse(prevRaw) : [];
-              const merged = Array.from(new Set([...prev, ...ids])).slice(-500);
-              await env.KV.put(delKey, JSON.stringify(merged));
-            } catch {}
-          }
-          if (env.DB) {
-            for (const mid of ids) {
+              await env.DB.prepare("UPDATE messages SET is_deleted = 1 WHERE id = ?").bind(mid).run();
+            } catch {
               try {
                 await env.DB.prepare("DELETE FROM messages WHERE id = ?").bind(mid).run();
               } catch {}
             }
+          }
+          const partnerId = parseDirectPartnerId(conversation_id, user_id);
+          if (partnerId) {
+            runBg(pushSignal(env, partnerId, {
+              type: "message_deleted",
+              conversation_id,
+              deleted_ids: ids,
+            }));
           }
         }
         return jsonResponse({ success: true, deleted_ids: ids });
@@ -1162,25 +1198,21 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       }
     }
 
-    // 15. Message Reactions (Real KV + D1 Persistence)
+    // 15. Message Reactions (Strongly-Consistent D1 + Signal Push)
     if (url.pathname === "/api/v1/messages/react" && request.method === "POST") {
       try {
         const body = await getBody();
-        const { message_id, user_name, emoji } = body || {};
+        const { message_id, user_id, user_name, emoji } = body || {};
         if (!message_id || !emoji) {
           return jsonResponse({ detail: "Missing message_id or emoji" }, 400);
         }
 
         let reactions: Record<string, string[]> = {};
-        if (env.KV) {
+        let convId = "";
+        if (env.DB) {
           try {
-            const raw = await env.KV.get(`msg_react:${message_id}`);
-            if (raw) reactions = JSON.parse(raw);
-          } catch {}
-        }
-        if (Object.keys(reactions).length === 0 && env.DB) {
-          try {
-            const row = await env.DB.prepare("SELECT reactions FROM messages WHERE id = ?").bind(message_id).first();
+            const row = await env.DB.prepare("SELECT conversation_id, reactions FROM messages WHERE id = ?").bind(message_id).first();
+            convId = String(row?.conversation_id || "");
             if (row?.reactions && typeof row.reactions === "string") {
               reactions = JSON.parse(row.reactions);
             }
@@ -1188,9 +1220,9 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         }
 
         const list = Array.isArray(reactions[emoji]) ? [...reactions[emoji]] : [];
-        const actor = user_name || "User";
-        if (list.includes(actor)) {
-          const next = list.filter((u) => u !== actor);
+        const actor = user_id || user_name || "User";
+        if (list.includes(actor) || (user_name && list.includes(user_name))) {
+          const next = list.filter((u) => u !== actor && u !== user_name);
           if (next.length === 0) delete reactions[emoji];
           else reactions[emoji] = next;
         } else {
@@ -1198,19 +1230,23 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           reactions[emoji] = list;
         }
 
-        if (env.KV) {
-          try {
-            await env.KV.put(`msg_react:${message_id}`, JSON.stringify(reactions));
-          } catch {}
-        }
         if (env.DB) {
           try {
             await env.DB.prepare("UPDATE messages SET reactions = ? WHERE id = ?").bind(JSON.stringify(reactions), message_id).run();
+            const partnerId = parseDirectPartnerId(convId, user_id);
+            if (partnerId) {
+              runBg(pushSignal(env, partnerId, {
+                type: "message_reaction",
+                conversation_id: convId,
+                message_id,
+                reactions,
+              }));
+            }
           } catch {}
         }
 
         return jsonResponse({ success: true, reactions });
-      } catch (e: any) {
+      } catch {
         return jsonResponse({ success: true, reactions: {} });
       }
     }
@@ -1242,22 +1278,25 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       }
     }
 
-    // 15c. Calling System Endpoints (Real-Time KV Signaling + D1/KV History)
+    // 15c. Calling System Endpoints (Strongly-Consistent D1 Signaling + Busy Checks + History)
     if (url.pathname === "/api/v1/calls/initiate" && request.method === "POST") {
       try {
         const body = await getBody();
         const { caller_id, target_user_id, call_type, room_name, title } = body || {};
         const callId = room_name || `call_${crypto.randomUUID()}`;
         const now = new Date().toISOString();
+        const isGroupTarget = Boolean(target_user_id && String(target_user_id).startsWith("group_"));
+        const directTargetId = isGroupTarget ? null : target_user_id;
 
-        // Busy check in KV
-        if (target_user_id && env.KV) {
-          try {
-            const busyState = await env.KV.get(`in_call:${target_user_id}`);
-            if (busyState) {
-              const targetRow = env.DB
-                ? await env.DB.prepare("SELECT name, connect_id FROM users WHERE id = ?").bind(target_user_id).first()
-                : null;
+        // Clean expired call locks & check busy status cleanly in D1
+        if (env.DB) {
+          await env.DB.prepare("DELETE FROM active_call_locks WHERE expires_at <= ?").bind(now).run().catch(() => {});
+          if (directTargetId) {
+            const busyRow = await env.DB.prepare(
+              "SELECT call_id FROM active_call_locks WHERE user_id = ? AND expires_at > ? LIMIT 1"
+            ).bind(directTargetId, now).first().catch(() => null);
+            if (busyRow) {
+              const targetRow = await env.DB.prepare("SELECT name, connect_id FROM users WHERE id = ?").bind(directTargetId).first().catch(() => null);
               const targetDisplay = formatDisplayName(targetRow?.name as string, targetRow?.connect_id as string);
               return jsonResponse({
                 success: false,
@@ -1265,7 +1304,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
                 message: `${targetDisplay} is currently on another call.`,
               });
             }
-          } catch {}
+          }
         }
 
         let callerInfo: any = { name: title || "Teammate", connect_id: "", avatar: "" };
@@ -1283,8 +1322,8 @@ export const onRequest: PagesFunction<Env> = async (context) => {
                 };
               }
             }
-            if (target_user_id) {
-              const tRow = await env.DB.prepare("SELECT id, name, connect_id, avatar FROM users WHERE id = ?").bind(target_user_id).first();
+            if (directTargetId) {
+              const tRow = await env.DB.prepare("SELECT id, name, connect_id, avatar FROM users WHERE id = ?").bind(directTargetId).first();
               if (tRow) {
                 targetInfo = {
                   name: formatDisplayName(tRow.name as string, tRow.connect_id as string),
@@ -1296,13 +1335,14 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           } catch {}
         }
 
+        const ringExpIso = new Date(Date.now() + 45000).toISOString();
         const callRecord = {
           id: callId,
           caller_id,
           caller_name: callerInfo.name,
           caller_connect_id: callerInfo.connect_id,
           caller_avatar: callerInfo.avatar,
-          target_user_id,
+          target_user_id: directTargetId,
           target_name: targetInfo.name,
           target_connect_id: targetInfo.connect_id,
           target_avatar: targetInfo.avatar,
@@ -1313,19 +1353,50 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           duration: 0,
         };
 
-        if (env.KV) {
+        if (env.DB) {
           try {
-            await env.KV.put(`call:${callId}`, JSON.stringify(callRecord));
+            await env.DB.prepare(
+              "INSERT OR REPLACE INTO calls (id, caller_id, call_type, call_status, started_at, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            ).bind(callId, caller_id || "anon", call_type || "video", target_user_id ? "ringing" : "active", now, now).run();
             if (caller_id) {
-              await env.KV.put(`user_call:${caller_id}:${callId}`, JSON.stringify(callRecord));
-              await env.KV.put(`in_call:${caller_id}`, callId, { expirationTtl: 120 });
+              await env.DB.prepare(
+                "INSERT OR IGNORE INTO call_participants (id, call_id, user_id, joined_at, participant_status) VALUES (?, ?, ?, ?, 'joined')"
+              ).bind(crypto.randomUUID(), callId, caller_id, now).run();
+              await env.DB.prepare(
+                "INSERT OR REPLACE INTO active_call_locks (user_id, call_id, call_status, expires_at) VALUES (?, ?, 'ringing', ?)"
+              ).bind(caller_id, callId, ringExpIso).run();
             }
-            if (target_user_id) {
-              await env.KV.put(`user_call:${target_user_id}:${callId}`, JSON.stringify(callRecord));
-              await env.KV.put(`in_call:${target_user_id}`, callId, { expirationTtl: 90 });
-
-              // Push real-time incoming call signal to target user!
-              await pushSignal(env.KV, target_user_id, {
+            if (isGroupTarget) {
+              const gRow = await env.DB.prepare("SELECT name, members, created_by FROM groups WHERE id = ?")
+                .bind(target_user_id).first().catch(() => null);
+              const members: string[] = gRow?.members ? JSON.parse(String(gRow.members)) : [];
+              if (gRow?.created_by && !members.includes(String(gRow.created_by))) {
+                members.push(String(gRow.created_by));
+              }
+              for (const uid of members) {
+                if (!uid || uid === caller_id) continue;
+                await env.DB.prepare(
+                  "INSERT OR IGNORE INTO call_participants (id, call_id, user_id, joined_at, participant_status) VALUES (?, ?, ?, ?, 'ringing')"
+                ).bind(crypto.randomUUID(), callId, uid, now).run().catch(() => {});
+                await pushSignal(env, uid, {
+                  type: "incoming_call",
+                  call_id: callId,
+                  caller_id,
+                  caller_name: `${gRow?.name || "Group"} (${callerInfo.name})`,
+                  caller_connect_id: callerInfo.connect_id,
+                  caller_avatar: callerInfo.avatar,
+                  room_name: callId,
+                  call_type: "group",
+                });
+              }
+            } else if (directTargetId) {
+              await env.DB.prepare(
+                "INSERT OR IGNORE INTO call_participants (id, call_id, user_id, joined_at, participant_status) VALUES (?, ?, ?, ?, 'ringing')"
+              ).bind(crypto.randomUUID(), callId, directTargetId, now).run();
+              await env.DB.prepare(
+                "INSERT OR REPLACE INTO active_call_locks (user_id, call_id, call_status, expires_at) VALUES (?, ?, 'ringing', ?)"
+              ).bind(directTargetId, callId, ringExpIso).run();
+              await pushSignal(env, directTargetId, {
                 type: "incoming_call",
                 call_id: callId,
                 caller_id,
@@ -1339,22 +1410,12 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           } catch {}
         }
 
-        if (env.DB) {
-          try {
-            await env.DB.prepare(
-              "INSERT OR REPLACE INTO calls (id, caller_id, call_type, call_status, started_at, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-            ).bind(callId, caller_id || "anon", call_type || "video", target_user_id ? "ringing" : "active", now, now).run();
-            if (caller_id) {
-              await env.DB.prepare(
-                "INSERT OR IGNORE INTO call_participants (id, call_id, user_id, joined_at, participant_status) VALUES (?, ?, ?, ?, 'joined')"
-              ).bind(crypto.randomUUID(), callId, caller_id, now).run();
-            }
-            if (target_user_id) {
-              await env.DB.prepare(
-                "INSERT OR IGNORE INTO call_participants (id, call_id, user_id, joined_at, participant_status) VALUES (?, ?, ?, ?, 'ringing')"
-              ).bind(crypto.randomUUID(), callId, target_user_id, now).run();
-            }
-          } catch {}
+        if (env.KV) {
+          runBg((async () => {
+            await env.KV!.put(`call:${callId}`, JSON.stringify(callRecord));
+            if (caller_id) await env.KV!.put(`user_call:${caller_id}:${callId}`, JSON.stringify(callRecord));
+            if (directTargetId) await env.KV!.put(`user_call:${directTargetId}:${callId}`, JSON.stringify(callRecord));
+          })());
         }
 
         const token = await generateLiveKitJwt(callId, caller_id || "anon", title || callerInfo.name);
@@ -1374,29 +1435,45 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
     if (url.pathname === "/api/v1/calls/signals" && request.method === "GET") {
       const userId = url.searchParams.get("user_id") || "";
-      let signals: any[] = [];
+      const signals: any[] = [];
       const typing: string[] = [];
 
-      if (userId && env.KV) {
+      if (userId && env.DB) {
         try {
-          // Refresh user's online heartbeat & active call TTL if in call
-          await env.KV.put(`presence:${userId}`, JSON.stringify({ status: "online", last_seen: new Date().toISOString() }), { expirationTtl: 60 });
+          const nowIso = new Date().toISOString();
+          const { results: sigRows } = await env.DB.prepare(
+            "SELECT id, payload FROM realtime_signals WHERE user_id = ? ORDER BY created_at ASC LIMIT 50"
+          ).bind(userId).all();
 
-          const sigKey = `signals:${userId}`;
-          const raw = await env.KV.get(sigKey);
-          if (raw) {
-            signals = JSON.parse(raw);
-            await env.KV.delete(sigKey);
+          if (sigRows && sigRows.length > 0) {
+            const consumedIds: string[] = [];
+            for (const row of sigRows) {
+              consumedIds.push(String(row.id));
+              try {
+                signals.push(JSON.parse(String(row.payload)));
+              } catch {}
+            }
+            // Atomically delete only the fetched signal rows so concurrent inserts are never lost
+            const placeholders = consumedIds.map(() => "?").join(",");
+            await env.DB.prepare(`DELETE FROM realtime_signals WHERE id IN (${placeholders})`)
+              .bind(...consumedIds).run().catch(() => {});
           }
 
-          const tList = await env.KV.list({ prefix: `typing:${userId}:` });
-          for (const tk of tList.keys || []) {
-            const val = await env.KV.get(tk.name);
-            if (val === "1") {
-              typing.push(tk.name.replace(`typing:${userId}:`, ""));
-            }
+          const { results: typeRows } = await env.DB.prepare(
+            "SELECT from_user_id FROM typing_status WHERE target_user_id = ? AND expires_at > ?"
+          ).bind(userId, nowIso).all().catch(() => ({ results: [] as any[] }));
+          for (const tr of typeRows || []) {
+            if (tr.from_user_id) typing.push(String(tr.from_user_id));
           }
         } catch {}
+      }
+
+      if (userId && env.KV) {
+        runBg(
+          env.KV.put(`presence:${userId}`, JSON.stringify({ status: "online", last_seen: new Date().toISOString() }), {
+            expirationTtl: 60,
+          })
+        );
       }
       return jsonResponse({ signals, typing });
     }
@@ -1408,43 +1485,44 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         const now = new Date().toISOString();
         const newStatus = accepted ? "active" : "rejected";
 
-        if (env.KV && call_id) {
+        if (env.DB && call_id) {
           try {
-            const prevStr = await env.KV.get(`call:${call_id}`);
-            if (prevStr) {
-              const rec = JSON.parse(prevStr);
-              rec.call_status = newStatus;
-              if (accepted) rec.answered_at = now;
-              else rec.ended_at = now;
-              await env.KV.put(`call:${call_id}`, JSON.stringify(rec));
-              if (rec.caller_id) await env.KV.put(`user_call:${rec.caller_id}:${call_id}`, JSON.stringify(rec));
-              if (rec.target_user_id) await env.KV.put(`user_call:${rec.target_user_id}:${call_id}`, JSON.stringify(rec));
-
-              // Notify caller immediately!
-              await pushSignal(env.KV, rec.caller_id, {
+            await env.DB.prepare("UPDATE calls SET call_status = ?, answered_at = ? WHERE id = ?")
+              .bind(newStatus, accepted ? now : null, call_id).run();
+            const callRow = await env.DB.prepare("SELECT caller_id FROM calls WHERE id = ?").bind(call_id).first().catch(() => null);
+            const callerId = callRow?.caller_id ? String(callRow.caller_id) : "";
+            if (callerId) {
+              await pushSignal(env, callerId, {
                 type: "call_response",
                 call_id,
                 room_name: call_id,
                 responder_id: user_id,
                 accepted: Boolean(accepted),
               });
-
-              if (!accepted) {
-                if (rec.caller_id) await env.KV.delete(`in_call:${rec.caller_id}`);
-                if (rec.target_user_id) await env.KV.delete(`in_call:${rec.target_user_id}`);
-              } else {
-                if (rec.caller_id) await env.KV.put(`in_call:${rec.caller_id}`, call_id, { expirationTtl: 1800 });
-                if (rec.target_user_id) await env.KV.put(`in_call:${rec.target_user_id}`, call_id, { expirationTtl: 1800 });
-              }
+            }
+            if (!accepted) {
+              await env.DB.prepare("DELETE FROM active_call_locks WHERE call_id = ?").bind(call_id).run().catch(() => {});
+            } else {
+              const activeExp = new Date(Date.now() + 1800000).toISOString();
+              await env.DB.prepare("UPDATE active_call_locks SET call_status = 'active', expires_at = ? WHERE call_id = ?")
+                .bind(activeExp, call_id).run().catch(() => {});
             }
           } catch {}
         }
 
-        if (env.DB && call_id) {
-          try {
-            await env.DB.prepare("UPDATE calls SET call_status = ?, answered_at = ? WHERE id = ?")
-              .bind(newStatus, accepted ? now : null, call_id).run();
-          } catch {}
+        if (env.KV && call_id) {
+          runBg((async () => {
+            const prevStr = await env.KV!.get(`call:${call_id}`);
+            if (prevStr) {
+              const rec = JSON.parse(prevStr);
+              rec.call_status = newStatus;
+              if (accepted) rec.answered_at = now;
+              else rec.ended_at = now;
+              await env.KV!.put(`call:${call_id}`, JSON.stringify(rec));
+              if (rec.caller_id) await env.KV!.put(`user_call:${rec.caller_id}:${call_id}`, JSON.stringify(rec));
+              if (rec.target_user_id) await env.KV!.put(`user_call:${rec.target_user_id}:${call_id}`, JSON.stringify(rec));
+            }
+          })());
         }
 
         return jsonResponse({ success: true, call_status: newStatus });
@@ -1459,35 +1537,24 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         const { call_id, user_id, duration_seconds, target_user_id } = body || {};
         const now = new Date().toISOString();
 
-        if (env.KV && call_id) {
+        if (env.DB && call_id) {
           try {
-            const prevStr = await env.KV.get(`call:${call_id}`);
-            if (prevStr) {
-              const rec = JSON.parse(prevStr);
-              rec.call_status = "ended";
-              rec.ended_at = now;
-              rec.duration = duration_seconds || 0;
-              await env.KV.put(`call:${call_id}`, JSON.stringify(rec));
-              if (rec.caller_id) {
-                await env.KV.put(`user_call:${rec.caller_id}:${call_id}`, JSON.stringify(rec));
-                await env.KV.delete(`in_call:${rec.caller_id}`);
-              }
-              if (rec.target_user_id) {
-                await env.KV.put(`user_call:${rec.target_user_id}:${call_id}`, JSON.stringify(rec));
-                await env.KV.delete(`in_call:${rec.target_user_id}`);
-              }
+            await env.DB.prepare("UPDATE calls SET call_status = 'ended', ended_at = ?, duration = ? WHERE id = ?")
+              .bind(now, duration_seconds || 0, call_id).run();
+            await env.DB.prepare("DELETE FROM active_call_locks WHERE call_id = ?").bind(call_id).run().catch(() => {});
 
-              const otherId = rec.caller_id === user_id ? rec.target_user_id : rec.caller_id;
-              if (otherId) {
-                await pushSignal(env.KV, otherId, {
-                  type: "call_ended",
-                  call_id,
-                  room_name: call_id,
-                  user_id,
-                });
-              }
-            } else if (target_user_id) {
-              await pushSignal(env.KV, target_user_id, {
+            const { results: pRows } = await env.DB.prepare(
+              "SELECT DISTINCT user_id FROM call_participants WHERE call_id = ?"
+            ).bind(call_id).all().catch(() => ({ results: [] as any[] }));
+            const notifySet = new Set<string>();
+            for (const pr of pRows || []) {
+              if (pr.user_id && String(pr.user_id) !== user_id) notifySet.add(String(pr.user_id));
+            }
+            if (target_user_id && target_user_id !== user_id && !String(target_user_id).startsWith("group_")) {
+              notifySet.add(String(target_user_id));
+            }
+            for (const otherId of notifySet) {
+              await pushSignal(env, otherId, {
                 type: "call_ended",
                 call_id,
                 room_name: call_id,
@@ -1497,14 +1564,19 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           } catch {}
         }
 
-        if (env.KV && user_id) await env.KV.delete(`in_call:${user_id}`).catch(() => {});
-        if (env.KV && target_user_id) await env.KV.delete(`in_call:${target_user_id}`).catch(() => {});
-
-        if (env.DB && call_id) {
-          try {
-            await env.DB.prepare("UPDATE calls SET call_status = 'ended', ended_at = ?, duration = ? WHERE id = ?")
-              .bind(now, duration_seconds || 0, call_id).run();
-          } catch {}
+        if (env.KV && call_id) {
+          runBg((async () => {
+            const prevStr = await env.KV!.get(`call:${call_id}`);
+            if (prevStr) {
+              const rec = JSON.parse(prevStr);
+              rec.call_status = "ended";
+              rec.ended_at = now;
+              rec.duration = duration_seconds || 0;
+              await env.KV!.put(`call:${call_id}`, JSON.stringify(rec));
+              if (rec.caller_id) await env.KV!.put(`user_call:${rec.caller_id}:${call_id}`, JSON.stringify(rec));
+              if (rec.target_user_id) await env.KV!.put(`user_call:${rec.target_user_id}:${call_id}`, JSON.stringify(rec));
+            }
+          })());
         }
 
         return jsonResponse({ success: true, duration: duration_seconds || 0 });
@@ -1519,38 +1591,43 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         const { call_id, caller_id, target_user_id } = body || {};
         const now = new Date().toISOString();
 
-        if (env.KV && call_id) {
+        if (env.DB && call_id) {
           try {
-            const prevStr = await env.KV.get(`call:${call_id}`);
+            await env.DB.prepare("UPDATE calls SET call_status = 'missed', ended_at = ?, duration = 0 WHERE id = ?")
+              .bind(now, call_id).run();
+            await env.DB.prepare("DELETE FROM active_call_locks WHERE call_id = ?").bind(call_id).run().catch(() => {});
+
+            const { results: pRows } = await env.DB.prepare(
+              "SELECT DISTINCT user_id FROM call_participants WHERE call_id = ?"
+            ).bind(call_id).all().catch(() => ({ results: [] as any[] }));
+            const notifySet = new Set<string>();
+            for (const pr of pRows || []) {
+              if (pr.user_id && String(pr.user_id) !== caller_id) notifySet.add(String(pr.user_id));
+            }
+            if (target_user_id && !String(target_user_id).startsWith("group_")) notifySet.add(String(target_user_id));
+
+            for (const uid of notifySet) {
+              await pushSignal(env, uid, { type: "call_timeout", call_id, room_name: call_id, caller_id });
+              await env.DB.prepare(
+                "INSERT INTO call_notifications (id, user_id, call_id, notification_type, is_read, created_at) VALUES (?, ?, ?, 'missed', 0, ?)"
+              ).bind(crypto.randomUUID(), uid, call_id, now).run().catch(() => {});
+            }
+          } catch {}
+        }
+
+        if (env.KV && call_id) {
+          runBg((async () => {
+            const prevStr = await env.KV!.get(`call:${call_id}`);
             if (prevStr) {
               const rec = JSON.parse(prevStr);
               rec.call_status = "missed";
               rec.ended_at = now;
               rec.duration = 0;
-              await env.KV.put(`call:${call_id}`, JSON.stringify(rec));
-              if (rec.caller_id) {
-                await env.KV.put(`user_call:${rec.caller_id}:${call_id}`, JSON.stringify(rec));
-                await env.KV.delete(`in_call:${rec.caller_id}`);
-              }
-              if (rec.target_user_id) {
-                await env.KV.put(`user_call:${rec.target_user_id}:${call_id}`, JSON.stringify(rec));
-                await env.KV.delete(`in_call:${rec.target_user_id}`);
-                await pushSignal(env.KV, rec.target_user_id, { type: "call_timeout", call_id, room_name: call_id, caller_id });
-              }
+              await env.KV!.put(`call:${call_id}`, JSON.stringify(rec));
+              if (rec.caller_id) await env.KV!.put(`user_call:${rec.caller_id}:${call_id}`, JSON.stringify(rec));
+              if (rec.target_user_id) await env.KV!.put(`user_call:${rec.target_user_id}:${call_id}`, JSON.stringify(rec));
             }
-          } catch {}
-        }
-
-        if (env.DB && call_id) {
-          try {
-            await env.DB.prepare("UPDATE calls SET call_status = 'missed', ended_at = ?, duration = 0 WHERE id = ?")
-              .bind(now, call_id).run();
-            if (target_user_id) {
-              await env.DB.prepare(
-                "INSERT INTO call_notifications (id, user_id, call_id, notification_type, is_read, created_at) VALUES (?, ?, ?, 'missed', 0, ?)"
-              ).bind(crypto.randomUUID(), target_user_id, call_id, now).run();
-            }
-          } catch {}
+          })());
         }
         return jsonResponse({ success: true, call_status: "missed" });
       } catch {
@@ -1562,9 +1639,43 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       const userId = url.searchParams.get("user_id");
       const mapByCallId: Record<string, any> = {};
 
-      if (userId && env.KV) {
+      if (userId && env.DB) {
         try {
-          const kvList = await env.KV.list({ prefix: `user_call:${userId}:` });
+          const { results } = await env.DB.prepare(
+            `SELECT c.id, c.caller_id, c.call_type, c.call_status, c.duration, c.started_at, c.ended_at, c.created_at,
+                    u.id as partner_id, u.name as partner_name, u.connect_id as partner_connect_id, u.avatar as partner_avatar
+             FROM calls c
+             LEFT JOIN call_participants p ON p.call_id = c.id
+             LEFT JOIN call_participants p2 ON p2.call_id = c.id AND p2.user_id != ?
+             LEFT JOIN users u ON u.id = (CASE WHEN c.caller_id = ? THEN p2.user_id ELSE c.caller_id END)
+             WHERE c.caller_id = ? OR p.user_id = ?
+             GROUP BY c.id
+             ORDER BY c.created_at DESC
+             LIMIT 40;`
+          ).bind(userId, userId, userId, userId).all();
+          for (const r of results || []) {
+            const isCaller = r.caller_id === userId;
+            mapByCallId[r.id as string] = {
+              id: r.id,
+              call_type: r.call_type || "video",
+              call_status: r.call_status || "ended",
+              duration: r.duration || 0,
+              started_at: r.started_at,
+              ended_at: r.ended_at,
+              created_at: r.created_at,
+              is_caller: isCaller,
+              partner_id: r.partner_id || null,
+              partner_name: formatDisplayName(r.partner_name as string, r.partner_connect_id as string),
+              partner_connect_id: r.partner_connect_id || "",
+              partner_avatar: r.partner_avatar || "",
+            };
+          }
+        } catch {}
+      }
+
+      if (userId && env.KV && Object.keys(mapByCallId).length === 0) {
+        try {
+          const kvList = await env.KV.list({ prefix: `user_call:${userId}:`, limit: 25 });
           for (const k of kvList.keys || []) {
             const val = await env.KV.get(k.name);
             if (val) {
@@ -1584,39 +1695,6 @@ export const onRequest: PagesFunction<Env> = async (context) => {
                 partner_name: isCaller ? (c.target_name || "Teammate") : (c.caller_name || "Teammate"),
                 partner_connect_id: isCaller ? (c.target_connect_id || "") : (c.caller_connect_id || ""),
                 partner_avatar: isCaller ? (c.target_avatar || "") : (c.caller_avatar || ""),
-              };
-            }
-          }
-        } catch {}
-      }
-
-      if (userId && env.DB) {
-        try {
-          const { results } = await env.DB.prepare(
-            `SELECT c.id, c.caller_id, c.call_type, c.call_status, c.duration, c.started_at, c.ended_at, c.created_at
-             FROM calls c
-             LEFT JOIN call_participants p ON p.call_id = c.id
-             WHERE c.caller_id = ? OR p.user_id = ?
-             GROUP BY c.id
-             ORDER BY c.created_at DESC
-             LIMIT 40;`
-          ).bind(userId, userId).all();
-          for (const r of results || []) {
-            if (!mapByCallId[r.id as string]) {
-              const isCaller = r.caller_id === userId;
-              mapByCallId[r.id as string] = {
-                id: r.id,
-                call_type: r.call_type || "video",
-                call_status: r.call_status || "ended",
-                duration: r.duration || 0,
-                started_at: r.started_at,
-                ended_at: r.ended_at,
-                created_at: r.created_at,
-                is_caller: isCaller,
-                partner_id: null,
-                partner_name: "Teammate",
-                partner_connect_id: "",
-                partner_avatar: "",
               };
             }
           }
@@ -1748,30 +1826,34 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       return jsonResponse([]);
     }
 
-    // 17. Real Presence & Typing Over KV
+    // 17. Real Presence & Typing Over Strongly-Consistent D1 + KV
     if (url.pathname === "/api/v1/presence/heartbeat" && request.method === "POST") {
       const body = await getBody();
       if (body.user_id && env.KV) {
-        try {
-          await env.KV.put(
+        runBg(
+          env.KV.put(
             `presence:${body.user_id}`,
             JSON.stringify({ status: body.status || "online", last_seen: new Date().toISOString() }),
             { expirationTtl: 60 }
-          );
-        } catch {}
+          )
+        );
       }
       return jsonResponse({ success: true });
     }
 
     if (url.pathname === "/api/v1/presence/typing" && request.method === "POST") {
       const body = await getBody();
-      if (body.from_user_id && body.target_user_id && env.KV) {
+      if (body.from_user_id && body.target_user_id && env.DB) {
         try {
-          const tKey = `typing:${body.target_user_id}:${body.from_user_id}`;
           if (body.is_typing) {
-            await env.KV.put(tKey, "1", { expirationTtl: 60 });
+            const expIso = new Date(Date.now() + 8000).toISOString();
+            await env.DB.prepare(
+              "INSERT OR REPLACE INTO typing_status (target_user_id, from_user_id, expires_at) VALUES (?, ?, ?)"
+            ).bind(body.target_user_id, body.from_user_id, expIso).run();
           } else {
-            await env.KV.delete(tKey);
+            await env.DB.prepare(
+              "DELETE FROM typing_status WHERE target_user_id = ? AND from_user_id = ?"
+            ).bind(body.target_user_id, body.from_user_id).run();
           }
         } catch {}
       }

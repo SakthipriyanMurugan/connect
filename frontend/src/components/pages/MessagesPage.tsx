@@ -615,7 +615,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
 
         // Light periodic unread count sync for non-active conversations
         const nowTs = Date.now();
-        if (nowTs - lastUnreadCheckRef.current > 10000) {
+        if (nowTs - lastUnreadCheckRef.current > 25000) {
           lastUnreadCheckRef.current = nowTs;
           const inactive = allChats.filter(
             (c) => c.conversation_id && c.conversation_id !== activeFriendRef.current?.conversation_id
@@ -812,12 +812,63 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
     };
   }, [user?.id]);
 
-  // 2b. Edge Serverless Signal Listeners (Typing indicators, Connection alerts, Notification navigation)
+  // 2b. Edge Serverless Signal Listeners (Instant <0.6s Message Push, Blue Ticks, Typing, Requests)
   useEffect(() => {
     if (!user?.id) return;
+    const onEdgeMessage = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const rawMsg = detail?.message;
+      if (!rawMsg || !rawMsg.id) return;
+      if (deletedMsgIdsRef.current.has(rawMsg.id)) return;
+
+      const convId = detail.conversation_id || rawMsg.conversation_id;
+      const newMsg: ChatMessage = { ...rawMsg, is_me: rawMsg.sender_id === user.id };
+
+      if (activeFriendRef.current?.conversation_id === convId) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === newMsg.id)) return prev;
+          return [...prev, newMsg];
+        });
+        markConvAsRead(convId);
+        if (rawMsg.sender_id !== user.id) {
+          fetch(`${API_BASE_URL}/api/v1/messages/read`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversation_id: convId, reader_id: user.id }),
+          }).catch(() => {});
+        }
+      } else if (convId && rawMsg.sender_id !== user.id) {
+        setUnreadMap((prev) => ({
+          ...prev,
+          [convId]: (prev[convId] || 0) + 1,
+        }));
+        onShowToast(`${rawMsg.sender_name || 'Message'}: ${rawMsg.file_name || rawMsg.content || 'New message'}`);
+      }
+    };
+
+    const onEdgeMessageEvent = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail || !detail.type) return;
+      if (detail.type === 'messages_read' && activeFriendRef.current?.conversation_id === detail.conversation_id) {
+        setMessages((prev) => prev.map((m) => (m.sender_id === user.id ? { ...m, is_read: true } : m)));
+      } else if (detail.type === 'message_reaction') {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === detail.message_id ? { ...m, reactions: detail.reactions } : m))
+        );
+      } else if (detail.type === 'message_deleted' && Array.isArray(detail.deleted_ids)) {
+        markMessagesDeleted(detail.deleted_ids);
+        const delSet = new Set(detail.deleted_ids);
+        setMessages((prev) => prev.filter((m) => !delSet.has(m.id)));
+      }
+    };
+
     const onEdgeTyping = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      const typingFrom: string[] = Array.isArray(detail?.typing_from) ? detail.typing_from : [];
+      const typingFrom: string[] = Array.isArray(detail)
+        ? detail
+        : Array.isArray(detail?.typing_from)
+        ? detail.typing_from
+        : [];
       if (activeFriendRef.current && !activeFriendRef.current.connection_id.startsWith('group_')) {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
           setIsTyping(typingFrom.includes(activeFriendRef.current.user_id));
@@ -838,10 +889,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       setChatFilter('requests');
       setActiveTab('requests');
     };
+    window.addEventListener('vertex_edge_message', onEdgeMessage);
+    window.addEventListener('vertex_edge_message_event', onEdgeMessageEvent);
     window.addEventListener('vertex_edge_typing', onEdgeTyping);
     window.addEventListener('vertex_connection_signal', onConnectionSignal);
     window.addEventListener('vertex_open_requests', onOpenRequests);
     return () => {
+      window.removeEventListener('vertex_edge_message', onEdgeMessage);
+      window.removeEventListener('vertex_edge_message_event', onEdgeMessageEvent);
       window.removeEventListener('vertex_edge_typing', onEdgeTyping);
       window.removeEventListener('vertex_connection_signal', onConnectionSignal);
       window.removeEventListener('vertex_open_requests', onOpenRequests);
@@ -1014,7 +1069,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                 conversation_id: activeFriend.conversation_id,
               })
             );
-          } else if (user?.id && activeFriend?.conversation_id && !activeFriend.connection_id.startsWith('group_')) {
+          } else if (
+            user?.id &&
+            activeFriend?.conversation_id &&
+            !activeFriend.connection_id.startsWith('group_') &&
+            data.some((m) => !m.is_me && !m.is_read)
+          ) {
             fetch(`${API_BASE_URL}/api/v1/messages/read`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1032,10 +1092,25 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       }
     };
 
-    fetchMessages();
+    let msgInFlight = false;
+    const safeFetchMessages = async () => {
+      if (msgInFlight) return;
+      msgInFlight = true;
+      try {
+        await fetchMessages();
+      } finally {
+        msgInFlight = false;
+      }
+    };
 
-    // Auto-poll every 2.5s so messages sync in real-time 24/7 even in serverless mode
-    const pollInterval = setInterval(fetchMessages, 2500);
+    safeFetchMessages();
+
+    // Fast 1.2s backup sync while visible (primary delivery happens <0.6s via vertex_edge_message signal)
+    const pollInterval = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        safeFetchMessages();
+      }
+    }, 1200);
     return () => clearInterval(pollInterval);
   }, [activeFriend]);
 

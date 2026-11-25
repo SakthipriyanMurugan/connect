@@ -9,7 +9,7 @@ import type { ActiveCallSession, CallEndStats, CallControlsHandle } from '../cal
 import { IncomingCallModal, IncomingCallData } from '../calling/IncomingCallModal';
 import type { MeetingIntelligenceReport } from '../../types';
 import { API_BASE_URL, WS_BASE_URL } from '../../config/api';
-import { stopOutgoingRingtone, stopRingtone } from '../../services/livekit';
+import { stopOutgoingRingtone, stopRingtone, playMessageSound } from '../../services/livekit';
 import { callService } from '../../services/calling/callService';
 
 // Code-split pages for sub-second initial load
@@ -67,6 +67,9 @@ export const MainLayout: React.FC = () => {
   activeCallRef.current = activeCallSession;
   const incomingCallRef = useRef<IncomingCallData | null>(null);
   incomingCallRef.current = incomingCall;
+  const seenSignalIdsRef = useRef<Set<string>>(new Set());
+  const currentPageRef = useRef<NavPage>(currentPage);
+  currentPageRef.current = currentPage;
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -74,6 +77,55 @@ export const MainLayout: React.FC = () => {
       setToastMessage((current) => (current === msg ? null : current));
     }, 3000);
   };
+
+  const showOSNotification = (title: string, body: string, tag?: string) => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    const opts: NotificationOptions = {
+      body,
+      icon: '/favicon.svg',
+      badge: '/favicon.svg',
+      tag,
+    };
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready
+        .then((reg) => {
+          if (reg && 'showNotification' in reg) {
+            return reg.showNotification(title, opts);
+          }
+          new Notification(title, opts);
+        })
+        .catch(() => {
+          try {
+            new Notification(title, opts);
+          } catch {}
+        });
+    } else {
+      try {
+        new Notification(title, opts);
+      } catch {}
+    }
+  };
+
+  // Request OS / Browser Notification Permission on first user interaction
+  useEffect(() => {
+    if (!user?.id || typeof window === 'undefined' || !('Notification' in window)) return;
+    if (Notification.permission !== 'default') return;
+
+    const askPerm = () => {
+      try {
+        Notification.requestPermission().catch(() => {});
+      } catch {}
+      window.removeEventListener('pointerdown', askPerm);
+      window.removeEventListener('keydown', askPerm);
+    };
+    window.addEventListener('pointerdown', askPerm, { once: true });
+    window.addEventListener('keydown', askPerm, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', askPerm);
+      window.removeEventListener('keydown', askPerm);
+    };
+  }, [user?.id]);
 
   // Deep-link meeting / call room auto-join (/?room=... or /meet/...)
   useEffect(() => {
@@ -99,12 +151,19 @@ export const MainLayout: React.FC = () => {
     }
   }, [user?.id]);
 
-  // Unified signaling dispatcher (handles both WebSocket and Serverless Edge KV Signals)
+  // Unified signaling dispatcher (handles both WebSocket and Serverless Edge D1 Signals)
   const processIncomingSignal = (data: any) => {
     if (!data || !data.type) return;
+    if (data._id) {
+      if (seenSignalIdsRef.current.has(data._id)) return;
+      seenSignalIdsRef.current.add(data._id);
+      if (seenSignalIdsRef.current.size > 300) {
+        seenSignalIdsRef.current = new Set(Array.from(seenSignalIdsRef.current).slice(-150));
+      }
+    }
 
     if (data.type === 'incoming_call') {
-      // If already in an active call or already ringing same room, ignore duplicate or notify busy
+      // If already in an active call or already ringing same room, ignore duplicate
       if (activeCallRef.current) {
         return;
       }
@@ -120,14 +179,27 @@ export const MainLayout: React.FC = () => {
         call_type: data.call_type || 'video',
       });
 
-      if ('Notification' in window && Notification.permission === 'granted') {
-        try {
-          new Notification(`VERTEX CONNECT: Incoming ${data.call_type === 'audio' || data.call_type === 'voice' ? 'voice' : 'video'} call`, {
-            body: `Incoming call from ${data.caller_name || 'Teammate'}${data.caller_connect_id ? ` (@${data.caller_connect_id})` : ''}`,
-            icon: '/favicon.svg',
-          });
-        } catch {}
+      showOSNotification(
+        `VERTEX CONNECT: Incoming ${data.call_type === 'audio' || data.call_type === 'voice' ? 'voice' : 'video'} call`,
+        `From ${data.caller_name || 'Teammate'}${data.caller_connect_id ? ` (@${data.caller_connect_id})` : ''}`,
+        `call-${data.room_name}`
+      );
+    } else if (data.type === 'new_message') {
+      window.dispatchEvent(new CustomEvent('vertex_edge_message', { detail: data }));
+      const msg = data.message || {};
+      if (msg.sender_id !== user?.id) {
+        playMessageSound();
+        const sender = msg.sender_name || 'Teammate';
+        const snippet = msg.file_name ? `Sent a file: ${msg.file_name}` : (msg.content || 'New message');
+        if (currentPageRef.current !== 'messages') {
+          showToast(`${sender}: ${snippet.slice(0, 60)}`);
+        }
+        if (typeof document !== 'undefined' && (document.visibilityState === 'hidden' || currentPageRef.current !== 'messages')) {
+          showOSNotification(`Message from ${sender}`, snippet.slice(0, 100), `msg-${data.conversation_id}`);
+        }
       }
+    } else if (data.type === 'messages_read' || data.type === 'message_reaction' || data.type === 'message_deleted') {
+      window.dispatchEvent(new CustomEvent('vertex_edge_message_event', { detail: data }));
     } else if (data.type === 'call_response') {
       if (!data.accepted) {
         stopOutgoingRingtone();
@@ -174,7 +246,13 @@ export const MainLayout: React.FC = () => {
       setIsCallMinimized(false);
       showToast(`${data.caller_name || 'Teammate'} is busy on another call.`);
     } else if (data.type === 'connection_request' || data.type === 'connection_accepted') {
+      playMessageSound();
       window.dispatchEvent(new CustomEvent('vertex_connection_signal', { detail: data }));
+      showOSNotification(
+        data.type === 'connection_request' ? 'New Connection Request' : 'Connection Accepted',
+        data.message || 'Check Vertex Connect requests',
+        `conn-${data.connection_id || Date.now()}`
+      );
     } else if (data.type === 'device_limit_exceeded') {
       showToast('⚠️ Maximum active devices reached. Please disconnect another session.');
     }
@@ -239,25 +317,31 @@ export const MainLayout: React.FC = () => {
     };
   }, [user?.id]);
 
-  // 2. Serverless Edge Signal Polling (Works 24/7 on Cloudflare Pages even without WebSocket server!)
+  // 2. High-Speed Edge Signal Polling (Works 24/7 even in background tabs so calls, messages & notifications NEVER miss!)
   useEffect(() => {
     if (!user?.id || WS_BASE_URL) return;
+    let inFlight = false;
 
     const poll = async () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      const res = await callService.pollSignals(user.id);
-      if (Array.isArray(res.signals)) {
-        for (const sig of res.signals) {
-          processIncomingSignal(sig);
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const res = await callService.pollSignals(user.id);
+        if (Array.isArray(res.signals)) {
+          for (const sig of res.signals) {
+            processIncomingSignal(sig);
+          }
         }
-      }
-      if (Array.isArray(res.typing)) {
-        window.dispatchEvent(new CustomEvent('vertex_edge_typing', { detail: res.typing }));
+        if (Array.isArray(res.typing)) {
+          window.dispatchEvent(new CustomEvent('vertex_edge_typing', { detail: { typing_from: res.typing } }));
+        }
+      } finally {
+        inFlight = false;
       }
     };
 
     poll();
-    const timer = setInterval(poll, 1300);
+    const timer = setInterval(poll, 600);
     return () => clearInterval(timer);
   }, [user?.id]);
 
@@ -308,7 +392,12 @@ export const MainLayout: React.FC = () => {
 
     // 2. Always persist in DB & dispatch Edge KV signal!
     if (user?.id) {
-      const apiType = (callType === 'audio' || callType === 'voice') ? 'voice' : callType === 'group' ? 'group' : 'video';
+      const isGroupTarget = Boolean(targetUserId && targetUserId.startsWith('group_'));
+      const apiType = isGroupTarget || callType === 'group'
+        ? 'group'
+        : (callType === 'audio' || callType === 'voice')
+        ? 'voice'
+        : 'video';
       const initRes = await callService.initiateCall(user.id, targetUserId, apiType, roomName, title);
       if (initRes && initRes.success === false && initRes.reason === 'busy') {
         stopOutgoingRingtone();

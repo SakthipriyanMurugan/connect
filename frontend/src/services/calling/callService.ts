@@ -57,14 +57,19 @@ export const callService = {
    * Poll real-time signals (incoming call, accept/reject/cancel, busy, typing) over serverless edge
    */
   async pollSignals(userId: string): Promise<{ signals: any[]; typing: string[] }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/calls/signals?user_id=${encodeURIComponent(userId)}`, {
         cache: 'no-store',
+        signal: controller.signal,
       });
       if (res.ok) {
         return await res.json();
       }
-    } catch {}
+    } catch {} finally {
+      clearTimeout(timer);
+    }
     return { signals: [], typing: [] };
   },
 
