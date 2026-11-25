@@ -350,6 +350,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   const typingTimeoutRef = useRef<any>(null);
   const lastTypingSentRef = useRef<number>(0);
   const lastUnreadCheckRef = useRef<number>(0);
+  const seenRealtimeMsgIdsRef = useRef<Set<string>>(new Set());
 
   const deletedMsgIdsRef = useRef<Set<string>>(
     (() => {
@@ -684,13 +685,73 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
 
   useEffect(() => {
     fetchConnections();
+    let lastConnPoll = Date.now();
     const interval = setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      const wsOpen = wsRef.current?.readyState === WebSocket.OPEN;
+      const now = Date.now();
+      if (!wsOpen || now - lastConnPoll >= 25000) {
+        lastConnPoll = now;
         fetchConnections();
       }
     }, 5000);
     return () => clearInterval(interval);
   }, [user?.id]);
+
+  // Shared real-time message & event handlers (deduplicates WS + Edge signals)
+  const applyRealtimeNewMessage = (rawMsg: any, explicitConvId?: string) => {
+    if (!rawMsg || !rawMsg.id || !user?.id) return;
+    if (deletedMsgIdsRef.current.has(rawMsg.id)) return;
+    if (seenRealtimeMsgIdsRef.current.has(rawMsg.id)) return;
+    seenRealtimeMsgIdsRef.current.add(rawMsg.id);
+    if (seenRealtimeMsgIdsRef.current.size > 400) {
+      const first = seenRealtimeMsgIdsRef.current.values().next().value;
+      if (first) seenRealtimeMsgIdsRef.current.delete(first);
+    }
+
+    const convId = explicitConvId || rawMsg.conversation_id;
+    const newMsg: ChatMessage = { ...rawMsg, is_me: rawMsg.sender_id === user.id };
+
+    if (activeFriendRef.current?.conversation_id === convId) {
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === newMsg.id)) return prev;
+        return [...prev, newMsg];
+      });
+      markConvAsRead(convId);
+      if (rawMsg.sender_id !== user.id && convId) {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'read_messages', conversation_id: convId }));
+        } else if (!String(convId).startsWith('group_')) {
+          fetch(`${API_BASE_URL}/api/v1/messages/read`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversation_id: convId, reader_id: user.id }),
+          }).catch(() => {});
+        }
+      }
+    } else if (convId && rawMsg.sender_id !== user.id) {
+      setUnreadMap((prev) => ({
+        ...prev,
+        [convId]: (prev[convId] || 0) + 1,
+      }));
+      onShowToast(`${rawMsg.sender_name || 'Message'}: ${rawMsg.file_name || rawMsg.content || 'New message'}`);
+    }
+  };
+
+  const applyRealtimeMessageEvent = (detail: any) => {
+    if (!detail || !detail.type || !user?.id) return;
+    if (detail.type === 'messages_read' && activeFriendRef.current?.conversation_id === detail.conversation_id) {
+      setMessages((prev) => prev.map((m) => (m.sender_id === user.id ? { ...m, is_read: true } : m)));
+    } else if (detail.type === 'message_reaction') {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === detail.message_id ? { ...m, reactions: detail.reactions } : m))
+      );
+    } else if (detail.type === 'message_deleted' && Array.isArray(detail.deleted_ids)) {
+      markMessagesDeleted(detail.deleted_ids);
+      const delSet = new Set(detail.deleted_ids);
+      setMessages((prev) => prev.filter((m) => !delSet.has(m.id)));
+    }
+  };
 
   // 2. Real-time WebSocket connection for user-isolated events (when WS server is active)
   useEffect(() => {
@@ -718,51 +779,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
             }
 
             if (data.type === 'new_message') {
-              const newMsg: ChatMessage = data.message;
-              // If message belongs to current open conversation
-              if (activeFriendRef.current?.conversation_id !== newMsg.conversation_id && newMsg.sender_id !== user?.id && newMsg.conversation_id) {
-                setUnreadMap((prev) => ({
-                  ...prev,
-                  [newMsg.conversation_id]: (prev[newMsg.conversation_id] || 0) + 1,
-                }));
-              }
-              if (activeFriendRef.current?.conversation_id === newMsg.conversation_id) {
-                setMessages((prev) => {
-                  if (prev.some((m) => m.id === newMsg.id)) return prev;
-                  return [...prev, newMsg];
-                });
-
-                // Immediately send read receipt via WebSocket (< 0.1ms instant blue tick for sender)
-                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                  wsRef.current.send(
-                    JSON.stringify({
-                      type: 'read_messages',
-                      conversation_id: newMsg.conversation_id,
-                    })
-                  );
-                } else if (user?.id && newMsg?.conversation_id && !String(newMsg.conversation_id).startsWith('group_')) {
-                  fetch(`${API_BASE_URL}/api/v1/messages/read`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ conversation_id: newMsg.conversation_id, reader_id: user.id }),
-                  }).catch(() => {});
-                }
-              }
-              onShowToast(`New message from ${newMsg.sender_name}`);
-            } else if (data.type === 'messages_read') {
-              if (activeFriendRef.current?.conversation_id === data.conversation_id) {
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.sender_id === user?.id ? { ...m, is_read: true } : m
-                  )
-                );
-              }
-            } else if (data.type === 'message_reaction') {
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === data.message_id ? { ...m, reactions: data.reactions } : m
-                )
-              );
+              applyRealtimeNewMessage(data.message, data.conversation_id);
+            } else if (data.type === 'messages_read' || data.type === 'message_reaction' || data.type === 'message_deleted') {
+              applyRealtimeMessageEvent(data);
             } else if (data.type === 'presence_update') {
               setFriends((prev) =>
                 prev.map((f) =>
@@ -817,49 +836,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
     if (!user?.id) return;
     const onEdgeMessage = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      const rawMsg = detail?.message;
-      if (!rawMsg || !rawMsg.id) return;
-      if (deletedMsgIdsRef.current.has(rawMsg.id)) return;
-
-      const convId = detail.conversation_id || rawMsg.conversation_id;
-      const newMsg: ChatMessage = { ...rawMsg, is_me: rawMsg.sender_id === user.id };
-
-      if (activeFriendRef.current?.conversation_id === convId) {
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === newMsg.id)) return prev;
-          return [...prev, newMsg];
-        });
-        markConvAsRead(convId);
-        if (rawMsg.sender_id !== user.id) {
-          fetch(`${API_BASE_URL}/api/v1/messages/read`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ conversation_id: convId, reader_id: user.id }),
-          }).catch(() => {});
-        }
-      } else if (convId && rawMsg.sender_id !== user.id) {
-        setUnreadMap((prev) => ({
-          ...prev,
-          [convId]: (prev[convId] || 0) + 1,
-        }));
-        onShowToast(`${rawMsg.sender_name || 'Message'}: ${rawMsg.file_name || rawMsg.content || 'New message'}`);
-      }
+      applyRealtimeNewMessage(detail?.message, detail?.conversation_id);
     };
 
     const onEdgeMessageEvent = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (!detail || !detail.type) return;
-      if (detail.type === 'messages_read' && activeFriendRef.current?.conversation_id === detail.conversation_id) {
-        setMessages((prev) => prev.map((m) => (m.sender_id === user.id ? { ...m, is_read: true } : m)));
-      } else if (detail.type === 'message_reaction') {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === detail.message_id ? { ...m, reactions: detail.reactions } : m))
-        );
-      } else if (detail.type === 'message_deleted' && Array.isArray(detail.deleted_ids)) {
-        markMessagesDeleted(detail.deleted_ids);
-        const delSet = new Set(detail.deleted_ids);
-        setMessages((prev) => prev.filter((m) => !delSet.has(m.id)));
-      }
+      applyRealtimeMessageEvent((e as CustomEvent).detail);
     };
 
     const onEdgeTyping = (e: Event) => {
@@ -1061,28 +1042,26 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
             return merged;
           });
 
-          // Mark unread messages as read instantly over WebSocket
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && activeFriend?.conversation_id) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: 'read_messages',
-                conversation_id: activeFriend.conversation_id,
-              })
-            );
-          } else if (
-            user?.id &&
-            activeFriend?.conversation_id &&
-            !activeFriend.connection_id.startsWith('group_') &&
-            data.some((m) => !m.is_me && !m.is_read)
-          ) {
-            fetch(`${API_BASE_URL}/api/v1/messages/read`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                conversation_id: activeFriend.conversation_id,
-                reader_id: user.id,
-              }),
-            }).catch(() => {});
+          // Mark unread incoming messages as read only when unread items exist
+          const hasUnreadIncoming = data.some((m) => !m.is_me && !m.is_read);
+          if (hasUnreadIncoming && activeFriend?.conversation_id) {
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              wsRef.current.send(
+                JSON.stringify({
+                  type: 'read_messages',
+                  conversation_id: activeFriend.conversation_id,
+                })
+              );
+            } else if (user?.id && !activeFriend.connection_id.startsWith('group_')) {
+              fetch(`${API_BASE_URL}/api/v1/messages/read`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  conversation_id: activeFriend.conversation_id,
+                  reader_id: user.id,
+                }),
+              }).catch(() => {});
+            }
           }
         }
       } catch (err) {
@@ -1093,9 +1072,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
     };
 
     let msgInFlight = false;
+    let lastMsgFetchAt = Date.now();
     const safeFetchMessages = async () => {
       if (msgInFlight) return;
       msgInFlight = true;
+      lastMsgFetchAt = Date.now();
       try {
         await fetchMessages();
       } finally {
@@ -1105,12 +1086,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
 
     safeFetchMessages();
 
-    // Fast 1.2s backup sync while visible (primary delivery happens <0.6s via vertex_edge_message signal)
+    // Real-time runs via WebSocket + vertex_edge_message; 15s sync when WS open, 1.5s backup when WS down
     const pollInterval = setInterval(() => {
-      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      const wsOpen = wsRef.current?.readyState === WebSocket.OPEN;
+      if (!wsOpen || Date.now() - lastMsgFetchAt >= 15000) {
         safeFetchMessages();
       }
-    }, 1200);
+    }, 1500);
     return () => clearInterval(pollInterval);
   }, [activeFriend]);
 
@@ -1563,6 +1546,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          conversation_id: activeFriend?.conversation_id,
           message_id: messageId,
           user_id: user.id,
           user_name: user.name,

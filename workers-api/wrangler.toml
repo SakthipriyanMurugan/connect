@@ -7,3 +7,23 @@ compatibility_flags = ["nodejs_compat"]
 binding = "DB"
 database_name = "connect"
 database_id = "6926e446-a98b-4c6f-9466-f9dc6d4966a9"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "392558f50ad94fb2b45608b208d9951f"
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "VertexRealtimeHub"
+
+[[durable_objects.bindings]]
+name = "USER_HUB"
+class_name = "UserShard"
+
+[[durable_objects.bindings]]
+name = "CHAT_HUB"
+class_name = "ConversationShard"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["VertexRealtimeHub", "UserShard", "ConversationShard"]

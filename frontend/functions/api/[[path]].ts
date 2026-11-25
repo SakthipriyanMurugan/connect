@@ -200,7 +200,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, Upgrade",
   };
 
   if (request.method === "OPTIONS") {
@@ -229,6 +229,35 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
   try {
     const url = new URL(request.url);
+
+    // Primary edge path: proxy /api/v1/* to sharded Durable Object SQLite Worker
+    // (immune to D1 daily row write exhaustion & handles real-time WebSocket signaling)
+    if (url.pathname.startsWith("/api/v1/")) {
+      try {
+        const targetUrl = `https://vertex-api.feelit.workers.dev${url.pathname}${url.search}`;
+        const proxyHeaders = new Headers(request.headers);
+        proxyHeaders.delete("host");
+        const hasBody = request.method !== "GET" && request.method !== "HEAD";
+        const workerRes = await fetch(targetUrl, {
+          method: request.method,
+          headers: proxyHeaders,
+          body: hasBody ? request.clone().body : undefined,
+        });
+        if (workerRes && (workerRes.status === 101 || workerRes.status < 500)) {
+          if (workerRes.status === 101) return workerRes;
+          const resHeaders = new Headers(workerRes.headers);
+          Object.entries(corsHeaders).forEach(([k, v]) => resHeaders.set(k, v));
+          resHeaders.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+          resHeaders.set("X-Vertex-Edge-Proxy", "durable-worker");
+          return new Response(workerRes.body, {
+            status: workerRes.status,
+            statusText: workerRes.statusText,
+            headers: resHeaders,
+          });
+        }
+      } catch {}
+    }
+
     await ensureSchema(env.DB);
 
     // 1. Health Endpoint

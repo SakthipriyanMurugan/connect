@@ -17,6 +17,14 @@ import { ActiveVideoCall } from './ActiveVideoCall';
 import { GroupCall, ParticipantInfo } from './GroupCall';
 import { OutgoingCallScreen } from './OutgoingCallScreen';
 
+const VOICE_AUDIO_DEFAULTS = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  channelCount: 1,
+  sampleRate: 48000,
+} as const;
+
 export interface ActiveCallSession {
   roomName: string;
   title: string;
@@ -220,13 +228,7 @@ export const CallModal: React.FC<CallModalProps> = ({
   useEffect(() => {
     if (!room || !isConnected || userMutedRef.current) return;
     room.localParticipant
-      .setMicrophoneEnabled(true, {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 2,
-        sampleRate: 48000,
-      })
+      .setMicrophoneEnabled(true, VOICE_AUDIO_DEFAULTS)
       .catch(() => {});
   }, [room, isConnected]);
 
@@ -275,28 +277,22 @@ export const CallModal: React.FC<CallModalProps> = ({
         const newRoom = new Room({
           adaptiveStream: true,
           dynacast: true,
-          audioCaptureDefaults: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-            channelCount: 2,
-            sampleRate: 48000,
-          },
+          audioCaptureDefaults: VOICE_AUDIO_DEFAULTS,
           videoCaptureDefaults: {
-            resolution: VideoPresets.h1080.resolution,
+            resolution: VideoPresets.h720.resolution,
             facingMode: 'user',
           },
           publishDefaults: {
             videoSimulcastLayers: [
+              VideoPresets.h360,
               VideoPresets.h540,
               VideoPresets.h720,
-              VideoPresets.h1080,
             ],
-            audioPreset: AudioPresets.musicHighQualityStereo,
-            forceStereo: true,
+            audioPreset: AudioPresets.speech,
+            forceStereo: false,
             screenShareEncoding: ScreenSharePresets.h1080fps30.encoding,
             red: true,
-            dtx: false,
+            dtx: true,
           },
         });
         activeRoom = newRoom;
@@ -304,10 +300,23 @@ export const CallModal: React.FC<CallModalProps> = ({
 
         newRoom.on(RoomEvent.ConnectionStateChanged, (state: ConnectionState) => {
           if (state === ConnectionState.Reconnecting) {
+            setIsConnecting(true);
             setConnectionStateLabel('Reconnecting...');
             onShowToast('Network unstable — reconnecting call...');
           } else if (state === ConnectionState.Connected) {
+            setIsConnecting(false);
             setConnectionStateLabel('Connected');
+          }
+        });
+
+        newRoom.on(RoomEvent.Reconnected, () => {
+          setIsConnecting(false);
+          setConnectionStateLabel('Connected');
+        });
+
+        newRoom.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+          if (!newRoom.canPlaybackAudio) {
+            newRoom.startAudio().catch(() => {});
           }
         });
 
@@ -328,6 +337,7 @@ export const CallModal: React.FC<CallModalProps> = ({
             } else if (track.kind === Track.Kind.Audio) {
               if (remoteAudioRef.current) track.attach(remoteAudioRef.current);
               else track.attach();
+              if (!newRoom.canPlaybackAudio) newRoom.startAudio().catch(() => {});
             }
             syncParticipants(newRoom);
           }
@@ -370,6 +380,7 @@ export const CallModal: React.FC<CallModalProps> = ({
         });
 
         await newRoom.connect(tokenData.url, tokenData.token);
+        newRoom.startAudio().catch(() => {});
         setIsConnecting(false);
         setConnectionStateLabel('Connected');
 
@@ -402,13 +413,7 @@ export const CallModal: React.FC<CallModalProps> = ({
         // Enable microphone immediately ONLY if already connected (incoming accept or open meeting); otherwise hold until answered
         if (isConnectedRef.current && !userMutedRef.current) {
           try {
-            await newRoom.localParticipant.setMicrophoneEnabled(true, {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-              channelCount: 2,
-              sampleRate: 48000,
-            });
+            await newRoom.localParticipant.setMicrophoneEnabled(true, VOICE_AUDIO_DEFAULTS);
           } catch (e) {
             console.warn('Microphone permission:', e);
           }
@@ -418,7 +423,7 @@ export const CallModal: React.FC<CallModalProps> = ({
         if (!isAudioOnly) {
           try {
             await newRoom.localParticipant.setCameraEnabled(true, {
-              resolution: VideoPresets.h1080.resolution,
+              resolution: VideoPresets.h720.resolution,
             });
             setIsVideoOn(true);
             const camTrack = newRoom.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
@@ -455,13 +460,7 @@ export const CallModal: React.FC<CallModalProps> = ({
       const nextMuted = !isMuted;
       userMutedRef.current = nextMuted;
       if (isConnectedRef.current || nextMuted) {
-        await room.localParticipant.setMicrophoneEnabled(!nextMuted, {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 2,
-          sampleRate: 48000,
-        });
+        await room.localParticipant.setMicrophoneEnabled(!nextMuted, VOICE_AUDIO_DEFAULTS);
       }
       setIsMuted(nextMuted);
       onShowToast(nextMuted ? 'Microphone muted' : 'Microphone unmuted');
@@ -476,7 +475,7 @@ export const CallModal: React.FC<CallModalProps> = ({
     try {
       const nextVideo = !isVideoOn;
       await room.localParticipant.setCameraEnabled(nextVideo, {
-        resolution: VideoPresets.h1080.resolution,
+        resolution: VideoPresets.h720.resolution,
         facingMode,
       });
       setIsVideoOn(nextVideo);
@@ -504,7 +503,7 @@ export const CallModal: React.FC<CallModalProps> = ({
       await room.localParticipant.setCameraEnabled(false);
       await room.localParticipant.setCameraEnabled(true, {
         facingMode: nextFacing,
-        resolution: VideoPresets.h1080.resolution,
+        resolution: VideoPresets.h720.resolution,
       });
       const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
       if (camTrack) {
@@ -583,7 +582,7 @@ export const CallModal: React.FC<CallModalProps> = ({
   return (
     <>
       {/* Hidden Audio Element ALWAYS stays mounted even when minimized so voice never cuts out */}
-      <audio ref={remoteAudioRef} autoPlay />
+      <audio ref={remoteAudioRef} autoPlay playsInline />
 
       <div
         className={

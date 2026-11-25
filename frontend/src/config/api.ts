@@ -20,25 +20,23 @@ if (isBrowser) {
 export const ACTIVE_TUNNEL_HTTP = '';
 export const ACTIVE_TUNNEL_WS = '';
 
+export const CLOUD_WORKER_URL = 'https://vertex-api.feelit.workers.dev';
+export const CLOUD_WORKER_WS_URL = 'wss://vertex-api.feelit.workers.dev';
+
 function resolveBaseUrl(): string {
   if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL as string;
-  // When accessed on Cloudflare Pages (vertex-connect.pages.dev), ALWAYS use same-origin clean API
-  if (isBrowser && hostname.includes('pages.dev')) {
-    return window.location.origin;
-  }
-  if (isBrowser) {
-    const cached = window.localStorage.getItem('VERTEX_API_URL');
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    const cached = isBrowser ? window.localStorage.getItem('VERTEX_API_URL') : null;
     if (cached && !cached.includes('roof-cotton') && !cached.includes('trycloudflare.com')) {
       return cached;
     }
-  }
-  if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return 'http://localhost:8000';
   }
   if (hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
     return `http://${hostname}:8000`;
   }
-  return isBrowser ? window.location.origin : 'http://localhost:8000';
+  // On Cloudflare Pages / public domain: connect directly to stateful Durable Object + WebSocket Worker!
+  return CLOUD_WORKER_URL;
 }
 
 function resolveWsUrl(): string {
@@ -49,8 +47,8 @@ function resolveWsUrl(): string {
   if (hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
     return `ws://${hostname}:8000`;
   }
-  // On Cloudflare Pages (serverless edge), real-time sync is powered 24/7 via sub-5ms edge polling & LiveKit WebRTC
-  return '';
+  // Persistent real-time WebSocket Hibernation via Cloudflare Durable Objects (< 20ms latency!)
+  return CLOUD_WORKER_WS_URL;
 }
 
 export const API_BASE_URL: string = resolveBaseUrl();
@@ -61,7 +59,7 @@ export const WS_BASE_URL: string = resolveWsUrl();
  */
 export async function autoDetectHealthyBackend(): Promise<string> {
   if (isBrowser && window.location.hostname.includes('pages.dev')) {
-    return window.location.origin;
+    return CLOUD_WORKER_URL;
   }
 
   const candidates = [

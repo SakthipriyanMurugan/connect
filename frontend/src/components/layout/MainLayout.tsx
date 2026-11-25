@@ -317,12 +317,13 @@ export const MainLayout: React.FC = () => {
     };
   }, [user?.id]);
 
-  // 2. High-Speed Edge Signal Polling (Works 24/7 even in background tabs so calls, messages & notifications NEVER miss!)
+  // 2. High-Speed Edge Signal Polling Fallback (automatically activates whenever WS isn't OPEN!)
   useEffect(() => {
-    if (!user?.id || WS_BASE_URL) return;
+    if (!user?.id) return;
     let inFlight = false;
 
     const poll = async () => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
       if (inFlight) return;
       inFlight = true;
       try {
@@ -340,9 +341,12 @@ export const MainLayout: React.FC = () => {
       }
     };
 
-    poll();
-    const timer = setInterval(poll, 600);
-    return () => clearInterval(timer);
+    const initDelay = setTimeout(poll, WS_BASE_URL ? 1500 : 100);
+    const timer = setInterval(poll, WS_BASE_URL ? 2500 : 600);
+    return () => {
+      clearTimeout(initDelay);
+      clearInterval(timer);
+    };
   }, [user?.id]);
 
   // Start outgoing call (WebSocket + Persistent REST API + Edge KV Signaling)
